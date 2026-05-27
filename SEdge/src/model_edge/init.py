@@ -74,8 +74,8 @@ def make_spectrograms_eigenvalues_correction(N, mel = True):
         omega = torch.linspace(0,torch.pi, N)
     
     else:
-        mel_scale = torch.linspace(0, torch.log(1+torch.pi), N)
-        omega = torch.tensor(torch.exp(mel_scale) - 1, dtype=torch.float32)
+        mel_scale = torch.linspace(0, np.log(1+np.pi), N)
+        omega = (torch.exp(mel_scale) - 1).to(torch.float32)
 
     sigma = sigma.unsqueeze(1)
     omega = omega.unsqueeze(1)

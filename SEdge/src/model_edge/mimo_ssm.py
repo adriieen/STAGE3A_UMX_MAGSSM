@@ -2,7 +2,7 @@ import torch
 
 from typing import Optional
 
-from .ssm import SSM, Progressive_MAGSSM
+from .ssm_bis import SSM, Progressive_MAGSSM
 
 class MIMOSSM(torch.nn.Module):
     def __init__(self,

@@ -5,7 +5,7 @@ from torch.nn import functional as F
 import numpy as np
 
 from .associative_scan import apply_ssm, apply_ssm_progressive
-from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_log_eigenvalues
+from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_eigenvalues_correction
 import math
 
 
@@ -401,7 +401,8 @@ class Progressive_MAGSSM(torch.nn.Module):
             B_i = torch.zeros(d_state, d_in)
             self.B = torch.nn.Parameter(torch.stack((B_r, B_i), dim=-1))
 
-            if C_C_init == 'convolution':                           
+            if C_C_init == 'convolution':
+                print("C_init_with_convolution")                           
                 # kernel size of 3 on the states of the SSM
                 C_r = torch.eye(d_out, d_state)
                 for i in range(d_out):
@@ -409,7 +410,7 @@ class Progressive_MAGSSM(torch.nn.Module):
                         if j==i+1 or j==i-1:
                             C_r[i,j] = 1
                
-               C_i = torch.copy(C_r)
+                C_i = C_r.clone()
                
             else : 
                 # orthogonal initialization of the C matrix
@@ -555,10 +556,10 @@ class Progressive_MAGSSM(torch.nn.Module):
                 self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
                 # Lambda = torch.complex(-torch.abs(Lambda.real), Lambda.imag)
 
-        Lambda = self.Lambda
+        Lambda_c = as_complex(self.Lambda)
         step = self.step_scale * torch.exp(self.log_step)
-
-        Lambda = Lambda / step # so that the discrete eigenvalues are indeed the one we wish to initialize with.
+        
+        Lambda_c = Lambda_c / step # so that the discrete eigenvalues are indeed the one we wish to initialize with.
 
 
         # print('Lambda', Lambda.shape)
@@ -569,7 +570,7 @@ class Progressive_MAGSSM(torch.nn.Module):
         C_bias_c = as_complex(self.C_bias)
 
         Lambda_bars, B_bars = self.discretize(
-            Lambda, B_c, B_bias_c, step, self.input_bias)
+            Lambda_c, B_c, B_bias_c, step, self.input_bias)
         if self.input_bias:
             B_bar = B_bars[:, 0:-1]
             B_bias_bar = B_bars[:, -1]
