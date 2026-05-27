@@ -1,0 +1,17 @@
+###############################################################################
+#                              Training Hyperparameters
+###############################################################################
+input_size: 1          # Input size (e.g., number of channels)
+classes: 35        # Number of output classes
+
+augments: none          # choices: [none, weak, strong]
+
+epochs: 40             # Number of training epochs
+# learning_rate: 0.002   # Learning rate
+learning_rate: 0.003   # Learning rate
+batch_size: 16         # Batch size for training
+
+dropout: 0.1           # Dropout rate
+weight_decay: 0.04     # Weight decay
+
+seed: 1234             # Random seed for reproducibility

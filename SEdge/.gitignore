@@ -1,0 +1,14 @@
+.env_a40x2
+.env*
+.vscode
+slurm*
+data
+data*
+results*
+results_journal
+export_model
+cpp_model
+__pycache__
+*.zip
+*.so
+*.su

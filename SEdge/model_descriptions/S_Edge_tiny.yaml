@@ -1,0 +1,31 @@
+###############################################################################
+#                              Model Description                          
+###############################################################################
+hidden_sizes: [32, 16, 8] # List of hidden sizes for each layer
+output_sizes: [8, 32, 64] # Number of output classes per layer
+trainable_skip_connections: true # Trainable skip connections (options: true, false)
+input_bias: true                # Input bias (options: true, false)
+output_bias: true               # Output bias (options: true, false)
+complex_output: false           # Complex output (options: true, false)
+act: LeakyRELu                  # Activation function (options: RELu, LeakyRELu, Identity)
+norm : true                     # Normalization (options: true, false)
+norm_type: bn                   # Normalization type (options: ln, bn)
+
+
+
+###############################################################################
+#                              Regularization                          
+###############################################################################
+stability: abs                  # Stability method (options: relu, abs)
+zeroOrderHoldRegularization: [] # Zero order hold regularization (list of values, per layer)
+# zeroOrderHoldRegularization: [0.3,0.6,1.0] # Zero order hold regularization (list of values, per layer)
+
+###############################################################################
+#                              Initialization                          
+###############################################################################
+B_C_init: orthogonal            # Initialization type (options: S5, orthogonal, kaiming_normal, kaiming_uniform, xavier_normal, xavier_uniform)
+bias_init: uniform              # Bias initialization (options: zero, uniform)
+
+
+
+

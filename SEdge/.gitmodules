@@ -1,0 +1,3 @@
+[submodule "Cpp-NN"]
+	path = Cpp-NN
+	url = git@github.com:embedded-machine-learning/Cpp-NN.git
