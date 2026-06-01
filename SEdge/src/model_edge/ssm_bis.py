@@ -3,8 +3,13 @@ from typing import Optional
 import torch
 from torch.nn import functional as F
 import numpy as np
+from torch.utils.checkpoint import checkpoint
 
-from .associative_scan import apply_ssm, apply_ssm_progressive
+
+# from .associative_scan import apply_ssm, apply_ssm_progressive
+from .associative_scan_bis import apply_ssm, apply_ssm_progressive
+
+
 from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_eigenvalues_correction
 import math
 
@@ -594,26 +599,40 @@ class Progressive_MAGSSM(torch.nn.Module):
         output = torch.zeros(B, total_num_samples, self.d_out, device=signal.device, dtype=out_dtype)
 
         current_index = 0
-
         chunks = torch.split(signal, c, dim=1)
-
         last_state = None
         offset = 0
 
-
         for chunk in chunks:
-            # last_state, out = apply_ssm_progressive(
-            #       Λ,....., last_state = last_state...
-            #         )
+            if self.training:
+                # 1. On crée un tenseur factice qui requiert des gradients
+                dummy = torch.zeros(1, device=signal.device, requires_grad=True)
 
-            last_state, out = apply_ssm_progressive(
-                Lambda_bars, B_bar, B_bias_bar, C_c, C_bias_c, 
-                chunk, 
-                self.complex_output, 
-                last_state=last_state, 
-                subsampling_factor = h,
-                offset = offset
-            )
+                # 2. On définit une enveloppe locale qui prend le dummy mais l'ignore
+                def checkpoint_wrapper(dummy_tensor, *args):
+                    return apply_ssm_progressive(*args)
+
+                # 3. On appelle checkpoint avec le dummy en premier argument
+                last_state, out = checkpoint(
+                    checkpoint_wrapper,
+                    dummy, # Le dummy force le checkpointing à s'activer
+                    Lambda_bars, B_bar, B_bias_bar, C_c, C_bias_c, 
+                    chunk, 
+                    self.complex_output, 
+                    last_state, 
+                    h,
+                    offset
+                )
+            else:
+                # Mode évaluation/validation (pas de checkpointing)
+                last_state, out = apply_ssm_progressive(
+                    Lambda_bars, B_bar, B_bias_bar, C_c, C_bias_c, 
+                    chunk, 
+                    self.complex_output, 
+                    last_state=last_state, 
+                    subsampling_factor=h,
+                    offset=offset
+                )
 
             num_samples = out.shape[1]
             output[:, current_index : current_index + num_samples, :] = out

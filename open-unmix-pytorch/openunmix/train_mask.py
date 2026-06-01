@@ -24,7 +24,7 @@ import utils_edge_var
 tqdm.monitor_interval = 0
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer):
+def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
     losses = utils.AverageMeter()
     unmix.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
@@ -33,31 +33,36 @@ def train(args, unmix, encoder, device, train_sampler, optimizer):
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
 
+        use_amp = (scaler is not None) and (device.type == "cuda")
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            Y_hat = unmix(x) # x is the waveform -- Mixture audio signal 
+            Y = encoder(y)
+            loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
-        Y_hat = unmix(x) # x is the waveform -- Mixture audio signal 
-        Y = encoder(y)
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
-
-        # print("tailles loss -- sortie du réseau vs sortie encodeur", Y_hat.data.shape, Y.data.shape)
-
-        loss = torch.nn.functional.mse_loss(Y_hat, Y)
-        loss.backward()
-        optimizer.step()
         losses.update(loss.item(), Y.size(1))
         pbar.set_postfix(loss="{:.3f}".format(losses.avg))
     return losses.avg
 
 
-def valid(args, unmix, encoder, device, valid_sampler):
+def valid(args, unmix, encoder, device, valid_sampler, use_amp=False):
     losses = utils.AverageMeter()
     unmix.eval()
     with torch.no_grad():
         for x, y in valid_sampler:
             x, y = x.to(device), y.to(device)
 
-            Y_hat = unmix(x)
-            Y = encoder(y)
-            loss = torch.nn.functional.mse_loss(Y_hat, Y)
+            with torch.cuda.amp.autocast(enabled=use_amp and (device.type == "cuda")):
+                Y_hat = unmix(x)
+                Y = encoder(y)
+                loss = torch.nn.functional.mse_loss(Y_hat, Y)
             losses.update(loss.item(), Y.size(1))
         return losses.avg
 
@@ -244,6 +249,9 @@ def main():
     parser.add_argument("--no-cuda", 
                         action="store_true", default=False, help="disables CUDA training"
     )
+    parser.add_argument("--amp",
+                        action="store_true", default=False, help="Use automatic mixed precision (AMP) during training"
+    )
 
 
     args, _ = parser.parse_known_args()
@@ -253,7 +261,7 @@ def main():
     print("Using GPU:", use_cuda)
     dataloader_kwargs = {"num_workers": args.nb_workers, "pin_memory": True} if use_cuda else {}
 
-    repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     repo = Repo(repo_dir)
     commit = repo.head.commit.hexsha[:7]
 
@@ -372,6 +380,9 @@ def main():
 
     es = utils.EarlyStopping(patience=args.patience)
 
+    # Initialize gradient scaler for AMP
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and use_cuda)
+
     # if a checkpoint is specified: resume training
     if args.checkpoint:
         model_path = Path(args.checkpoint).expanduser()
@@ -406,8 +417,8 @@ def main():
     for epoch in t:
         t.set_description("Training epoch")
         end = time.time()
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer)
-        valid_loss = valid(args, unmix, encoder, device, valid_sampler)
+        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, scaler=scaler)
+        valid_loss = valid(args, unmix, encoder, device, valid_sampler, use_amp=args.amp)
         scheduler.step(valid_loss)
         train_losses.append(train_loss)
         valid_losses.append(valid_loss)

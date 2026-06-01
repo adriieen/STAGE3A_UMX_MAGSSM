@@ -320,6 +320,9 @@ def main():
     parser.add_argument("--no-cuda", 
                         action="store_true", default=False, help="disables CUDA training"
     )
+    parser.add_argument("--amp",
+                        action="store_true", default=False, help="Use automatic mixed precision (AMP) during training"
+    )
 
 
     args, _ = parser.parse_known_args()
@@ -329,7 +332,7 @@ def main():
     print("Using GPU:", use_cuda)
     dataloader_kwargs = {"num_workers": args.nb_workers, "pin_memory": True} if use_cuda else {}
 
-    # repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    # repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     # repo = Repo(repo_dir)
     # commit = repo.head.commit.hexsha[:7]
 
@@ -459,6 +462,7 @@ def main():
         accelerator="gpu",
         devices=[0, 1],
         strategy="ddp",
+        precision=16 if args.amp else 32,
         callbacks=[checkpoint_callback, early_stop_callback, json_callback],
     )
     ckpt_path = args.checkpoint if args.checkpoint else None

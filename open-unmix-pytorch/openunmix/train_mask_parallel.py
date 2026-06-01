@@ -1,6 +1,14 @@
 import argparse
+import os
 import torch
 import torch.distributed as dist
+
+# Set CUDA device ASAP, before importing anything else (like torchaudio, which might initialize CUDA)
+is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
+if is_distributed:
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+
 import time
 from pathlib import Path
 import tqdm
@@ -9,7 +17,6 @@ import sklearn.preprocessing
 import numpy as np
 import random
 from git import Repo
-import os
 import copy
 import torchaudio
 
@@ -33,7 +40,7 @@ def print_rank0(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer):
+def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed=False):
     losses = utils.AverageMeter()
     unmix.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
@@ -50,7 +57,17 @@ def train(args, unmix, encoder, device, train_sampler, optimizer):
         optimizer.step()
         losses.update(loss.item(), Y.size(1))
         pbar.set_postfix(loss="{:.3f}".format(losses.avg))
-    return losses.avg
+        
+    if is_distributed:
+        # Sum training loss and count across all processes
+        loss_sum = torch.tensor(losses.sum, device=device)
+        count_sum = torch.tensor(losses.count, device=device)
+        dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(count_sum, op=dist.ReduceOp.SUM)
+        global_avg = (loss_sum / count_sum).item()
+        return global_avg
+    else:
+        return losses.avg
 
 
 def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False):
@@ -259,10 +276,13 @@ def main():
     # Initialize distributed process group if running under torchrun
     is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     if is_distributed:
-        dist.init_process_group(backend=args.backend, init_method="env://")
         global_rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
+        # Set device before any CUDA call is made to avoid CUFFT / CUDA context errors
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend=args.backend, init_method="env://")
+        device = torch.device(f"cuda:{local_rank}")
     else:
         global_rank = 0
         local_rank = 0
@@ -276,6 +296,9 @@ def main():
     print_rank0("Using GPU:", use_cuda)
     dataloader_kwargs = {"num_workers": args.nb_workers, "pin_memory": True} if use_cuda else {}
 
+    if not is_distributed:
+        device = torch.device("cuda" if use_cuda else "cpu")
+
     repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     try:
         repo = Repo(repo_dir)
@@ -287,12 +310,6 @@ def main():
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     np.random.seed(args.seed)
-
-    if is_distributed:
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f"cuda:{local_rank}")
-    else:
-        device = torch.device("cuda" if use_cuda else "cpu")
 
     if is_distributed:
         if global_rank == 0:
@@ -459,7 +476,7 @@ def main():
         t.set_description("Training epoch")
         end = time.time()
         
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer)
+        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed)
         valid_loss = valid(args, unmix, encoder, device, valid_sampler, is_distributed)
         
         # Scheduler and early stopping run on all ranks since validation loss is synced

@@ -6,17 +6,17 @@ import numpy as np
 
 dic = {
     "UNID" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/1d/vocals.json",
-    # "BILSTM" : "/home/adubois/openunmix/OpenUnmix/output_umx_2d_data_aug/vocals.json",
+    "BILSTM" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/bilstm_classic/vocals.json",
     "UMX-Edge" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/sedge/vocals.json",
     "UMX-Edge-var" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/sedge_var/vocals.json",
-    "Test : Edge+ a sort of MAGSSM" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/magssm/vocals.json",
-    "FALSE -- Edge+MAGSSM-48 states" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/true_magssm/48states/hid96/vocals.json",
-    "FALSE -- Edge+MAGSSM-96states (hsize = 256)" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/true_magssm/96states/hid256/vocals.json",
-    "FALSE -- Edge+MAGSSM-256states (hsize = 128)" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/true_magssm/256states/hid128/vocals.json",
-    "FALSE -- Edge+MAGSSM-256states (hsize = 512)" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/true_magssm/256states/hid512/vocals.json",
-    "Edge+MAGSSM - 256 states (hsize = 128) - nfft = 2048" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/true_magssm/256states/hid128_fixed_init/vocals.json",
-    "Edge+MAGSSM - 256 states (hsize = 512)" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/true_magssm/256states/hid512_fixed_init/vocals.json"
-
+    "Test : Edge+ a sort of MAGSSM" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/magssm/vocals.json",
+    "FALSE -- Edge+MAGSSM-48 states" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/true_magssm/48states/hid96/vocals.json",
+    "FALSE -- Edge+MAGSSM-96states (hsize = 256)" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/true_magssm/96states/hid256/vocals.json",
+    "FALSE -- Edge+MAGSSM-256states (hsize = 128)" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/true_magssm/256states/hid128/vocals.json",
+    "FALSE -- Edge+MAGSSM-256states (hsize = 512)" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/true_magssm/256states/hid512/vocals.json",
+    "Edge+MAGSSM - 256 states (hsize = 128) - nfft = 2048" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/true_magssm/256states/hid128_fixed_init/vocals.json",
+    "Edge+MAGSSM - 256 states (hsize = 512)" : "/home/adubois/openunmix/OpenUnmix/outputs/failed_models/true_magssm/256states/hid512_fixed_init/vocals.json",
+    "Edge+MAGSSM - 256 states (hsize = 256)" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/magssm_fixed_init/256states_hid256/vocals.json"
 
 }
 
