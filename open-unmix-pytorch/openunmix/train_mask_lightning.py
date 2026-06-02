@@ -33,11 +33,11 @@ class UnmixLitWrapper(pl.LightningModule):
     def __init__(self, unmix, encoder, args):
         super().__init__()
         self.unmix = unmix
-        self.encoder = encoder
+        self._encoder = encoder
         self.args = args
 
-        self.encoder.eval()
-        for p in self.encoder.parameters():
+        self._encoder.eval()
+        for p in self._encoder.parameters():
             p.requires_grad = False
     def forward(self, x):
 
@@ -45,7 +45,7 @@ class UnmixLitWrapper(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         Y_hat = self.unmix(x)
-        Y = self.encoder(y)
+        Y = self._encoder(y)
         loss = torch.nn.functional.mse_loss(Y_hat, Y)
         
 
@@ -54,7 +54,7 @@ class UnmixLitWrapper(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
         Y_hat = self.unmix(x)
-        Y = self.encoder(y)
+        Y = self._encoder(y)
         loss = torch.nn.functional.mse_loss(Y_hat, Y)
         
         self.log('val_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -171,6 +171,26 @@ class JsonLogCallback(pl.Callback):
             with open(self.target_path / f"{self.args.target}.json", "w") as outfile:
                 json.dump(params, outfile, indent=4, sort_keys=True)
 
+def get_statistics(args, encoder, dataset):
+    encoder = copy.deepcopy(encoder).to("cpu")  # CPU explicite → pas de conflit GPU
+    scaler = sklearn.preprocessing.StandardScaler()
+    dataset_scaler = copy.deepcopy(dataset)
+    dataset_scaler.random_chunks = False
+    dataset_scaler.seq_duration = None
+    dataset_scaler.samples_per_track = 1
+    dataset_scaler.augmentations = None
+    dataset_scaler.random_track_mix = False
+    dataset_scaler.random_interferer_mix = False
+
+    pbar = tqdm.tqdm(range(len(dataset_scaler)), disable=args.quiet)
+    for ind in pbar:
+        x, y = dataset_scaler[ind]
+        pbar.set_description("Compute dataset statistics")
+        X = encoder(x[None, ...]).mean(1, keepdim=False).permute(0, 2, 1)
+        scaler.partial_fit(np.squeeze(X))
+
+    std = np.maximum(scaler.scale_, 1e-4 * np.max(scaler.scale_))
+    return scaler.mean_, std
 
 
 def main():
@@ -373,16 +393,14 @@ def main():
     with open(Path(target_path, "separator.json"), "w") as outfile:
         outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
-    # if args.checkpoint or args.model or args.debug:
-    #     scaler_mean = None
-    #     scaler_std = None
-    # else:
-    #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
+    if args.checkpoint or args.model or args.debug:
+        scaler_mean = None
+        scaler_std = None
+    else:
+        scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
 
     max_bin = utils.bandwidth_to_max_bin(train_dataset.sample_rate, args.nfft, args.bandwidth)
 
-    scaler_mean = None
-    scaler_std = None
     max_bin = None
 
     if args.model: # fine tune model
@@ -404,7 +422,6 @@ def main():
             nb_bins=args.nfft // 2 + 1,
             nb_channels=args.nb_channels,
             hidden_size=args.hidden_size,
-            max_bin=max_bin,
             nb_layers = args.nb_layers,
             hidden_size_factors = args.hidden_size_factors,
             output_size_factors = args.output_size_factors,

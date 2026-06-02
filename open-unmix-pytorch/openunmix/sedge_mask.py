@@ -70,9 +70,6 @@ class SedgeMask(nn.Module):
         self.hidden_size = hidden_size
         self.use_edge = use_edge
 
-
-        self.instance_norm = nn.InstanceNorm2d(nb_channels, affine=True)
-
         self.fc0 = Linear(nb_bins, d_out)
 
         #self.fc1 = Linear(self.nb_bins * nb_channels, hidden_size, bias=False)
@@ -170,8 +167,6 @@ class SedgeMask(nn.Module):
 
         # print("Sortie de magssm = ", x.data.shape) 
         
-
-
         x = x.permute(3, 0, 1, 2)
         nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape # nb_bins = d_out
 

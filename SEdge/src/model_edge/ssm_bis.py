@@ -622,7 +622,7 @@ class Progressive_MAGSSM(torch.nn.Module):
                     last_state, 
                     h,
                     offset
-                )
+                ) # type: ignore
             else:
                 # Mode évaluation/validation (pas de checkpointing)
                 last_state, out = apply_ssm_progressive(

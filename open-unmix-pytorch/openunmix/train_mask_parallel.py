@@ -120,7 +120,7 @@ def get_statistics(args, encoder, dataset):
         scaler.partial_fit(np.squeeze(X))
 
     # set inital input scaler values
-    std = np.maximum(scaler.scale_, 1e-4 * np.max(scaler.scale_))
+    std = np.maximum(scaler.scale_, 1e-4 * np.max(scaler.scale_)) # type: ignore
 
     return scaler.mean_, std
 
@@ -381,8 +381,26 @@ def main():
             outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
     max_bin = None
-    scaler_mean = None
-    scaler_std = None
+
+    if args.checkpoint or args.model or args.debug:
+        scaler_mean = None
+        scaler_std = None
+    else:
+        nb_bins = args.nfft // 2 + 1
+        if global_rank == 0:
+            scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
+            mean_t = torch.tensor(scaler_mean, dtype=torch.float32)
+            std_t  = torch.tensor(scaler_std,  dtype=torch.float32)
+        else:
+            mean_t = torch.zeros(nb_bins, dtype=torch.float32)
+            std_t  = torch.zeros(nb_bins, dtype=torch.float32)
+
+        if is_distributed:
+            dist.broadcast(mean_t, src=0)
+            dist.broadcast(std_t,  src=0)
+
+        scaler_mean = mean_t.numpy()
+        scaler_std  = std_t.numpy()
 
     if args.model: # fine tune model
         print_rank0(f"Fine-tuning model from {args.model}")
@@ -400,7 +418,6 @@ def main():
             nb_bins=args.nfft // 2 + 1,
             nb_channels=args.nb_channels,
             hidden_size=args.hidden_size,
-            max_bin=max_bin,
             nb_layers=args.nb_layers,
             hidden_size_factors=args.hidden_size_factors,
             output_size_factors=args.output_size_factors,

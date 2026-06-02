@@ -56,7 +56,7 @@ def create_log_linear_matrix(nb_bins, d_out):
     """Adapting what was originaly implemented in the Open-Unmix to scale the input_mean and input_std 
     to the dimensions produced by the MAGSSM, mapping the linear n_bins into a log scale with size d_out.
     """
-    assert nb_bins < d_out, f"Number of frequencies after MAGSSM should be lower than number of bins in the FFT"
+    assert nb_bins > d_out, f"Number of frequencies after MAGSSM should be lower than number of bins in the FFT"
 
     edges = np.logspace(0, np.log10(nb_bins), num=d_out + 1)
     edges = np.round(edges).astype(int)
@@ -71,7 +71,7 @@ def create_log_linear_matrix(nb_bins, d_out):
         block_size = end - start
         W[i, start:end] = 1.0 / block_size
     
-    return torch.from_numpy(W)
+    return torch.from_numpy(W) 
 
 class LogNormalizer(torch.nn.Module):
     """
@@ -82,15 +82,16 @@ class LogNormalizer(torch.nn.Module):
 
     def __init__(self, nb_bins, d_out, linear_neg_mean, linear_inv_std):
 
+        super().__init__()
         W = create_log_linear_matrix(nb_bins, d_out)
         
-        neg_log_mean = torch.matmul(W, linear_neg_mean)
+        neg_log_mean = torch.matmul(W, linear_neg_mean) # (nb_bins --> d_out with log pooling)
         
         W_squared = W ** 2
 
         linear_variance = 1.0/ (linear_inv_std ** 2)
 
-        log_variance = torch.matmul(W_squared, linear_variance)
+        log_variance = torch.matmul(W_squared, linear_variance) # (nb_bins --> d_out with log pooling)
         log_inv_std = 1.0 / torch.sqrt(log_variance + 1e-8)
 
 

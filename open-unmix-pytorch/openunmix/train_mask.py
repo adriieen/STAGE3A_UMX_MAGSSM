@@ -329,7 +329,6 @@ def main():
             nb_bins=args.nfft // 2 + 1,
             nb_channels=args.nb_channels,
             hidden_size=args.hidden_size,
-            max_bin= None,
             nb_layers = args.nb_layers,
             hidden_size_factors = args.hidden_size_factors,
             output_size_factors = args.output_size_factors,
