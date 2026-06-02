@@ -40,8 +40,9 @@ def print_rank0(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed=False):
+def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed=False, scaler=None):
     losses = utils.AverageMeter()
+    nan_batches = 0
     unmix.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
     for x, y in pbar:
@@ -49,49 +50,74 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
 
-        Y_hat = unmix(x) # x is the waveform -- Mixture audio signal 
-        Y = encoder(y)
+        use_amp = (scaler is not None) and (device.type == "cuda")
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            Y_hat = unmix(x)  # x est la waveform — le modele produit son propre spectrogramme
+            Y = encoder(y)
+            loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
-        loss = torch.nn.functional.mse_loss(Y_hat, Y)
-        loss.backward()
-        optimizer.step()
+        # Detecter un NaN/Inf avant le backward pour eviter de corrompre les poids
+        if not torch.isfinite(loss):
+            nan_batches += 1
+            if not args.quiet:
+                print_rank0(f"[WARN] Loss non-finie ({loss.item():.4g}) sur ce batch — batch ignore.")
+            optimizer.zero_grad()
+            continue
+
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
         losses.update(loss.item(), Y.size(1))
         pbar.set_postfix(loss="{:.3f}".format(losses.avg))
-        
+
+    if nan_batches > 0:
+        print_rank0(f"[WARN] {nan_batches} batch(s) ignores (NaN/Inf) durant cette epoque.")
+
+    # Proteger contre un AverageMeter vide (tous les batches etaient NaN)
     if is_distributed:
-        # Sum training loss and count across all processes
-        loss_sum = torch.tensor(losses.sum, device=device)
-        count_sum = torch.tensor(losses.count, device=device)
+        # Aggreger correctement en ignorant les rangs sans batches valides
+        loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
+        count_sum = torch.tensor(float(losses.count), device=device)
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(count_sum, op=dist.ReduceOp.SUM)
-        global_avg = (loss_sum / count_sum).item()
-        return global_avg
+        if count_sum.item() == 0:
+            return float('nan')
+        return (loss_sum / count_sum).item()
     else:
-        return losses.avg
+        return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False):
+def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False, use_amp=False):
     losses = utils.AverageMeter()
     unmix.eval()
     with torch.no_grad():
         for x, y in valid_sampler:
             x, y = x.to(device), y.to(device)
 
-            Y_hat = unmix(x)
-            Y = encoder(y)
-            loss = torch.nn.functional.mse_loss(Y_hat, Y)
+            with torch.cuda.amp.autocast(enabled=use_amp and (device.type == "cuda")):
+                Y_hat = unmix(x)
+                Y = encoder(y)
+                loss = torch.nn.functional.mse_loss(Y_hat, Y)
+
+            if not torch.isfinite(loss):
+                continue  # ignorer les batches de validation avec NaN
             losses.update(loss.item(), Y.size(1))
-            
+
     if is_distributed:
-        # Sum validation loss and count across all processes
-        loss_sum = torch.tensor(losses.sum, device=device)
-        count_sum = torch.tensor(losses.count, device=device)
+        loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
+        count_sum = torch.tensor(float(losses.count), device=device)
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(count_sum, op=dist.ReduceOp.SUM)
-        global_avg = (loss_sum / count_sum).item()
-        return global_avg
+        if count_sum.item() == 0:
+            return float('nan')
+        return (loss_sum / count_sum).item()
     else:
-        return losses.avg
+        return losses.avg if losses.count > 0 else float('nan')
 
 
 def get_statistics(args, encoder, dataset):
@@ -261,6 +287,18 @@ def main():
     parser.add_argument("--backend", type=str, default="nccl", choices=["nccl", "gloo"],
                         help="Distributed backend to use (default: nccl)")
 
+    # Multi-node Parameters (pour torchrun --nnodes > 1)
+    # Ces valeurs sont normalement passees via les variables d'environnement
+    # MASTER_ADDR et MASTER_PORT par torchrun, mais on les expose aussi en arguments.
+    parser.add_argument("--master-addr", type=str, default=None,
+                        help="Adresse IP ou hostname du noeud master (rank 0). "
+                             "Surcharge la variable d'environnement MASTER_ADDR."
+    )
+    parser.add_argument("--master-port", type=str, default="29500",
+                        help="Port TCP du noeud master (defaut: 29500). "
+                             "Surcharge la variable d'environnement MASTER_PORT."
+    )
+
     # Misc Parameters
     parser.add_argument("--quiet",
         action="store_true",
@@ -270,12 +308,26 @@ def main():
     parser.add_argument("--no-cuda", 
                         action="store_true", default=False, help="disables CUDA training"
     )
+    parser.add_argument("--amp",
+                        action="store_true", default=False,
+                        help="Use automatic mixed precision (AMP) during training"
+    )
 
     args, _ = parser.parse_known_args()
 
     # Initialize distributed process group if running under torchrun
     is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     if is_distributed:
+        # Permettre de surcharger MASTER_ADDR/MASTER_PORT via arguments CLI
+        # (utile pour les clusters sans scheduler qui injecte ces variables)
+        if args.master_addr is not None:
+            os.environ["MASTER_ADDR"] = args.master_addr
+        if "MASTER_ADDR" not in os.environ:
+            raise RuntimeError(
+                "MASTER_ADDR non defini. Utilisez --master-addr ou la variable d'environnement MASTER_ADDR."
+            )
+        os.environ.setdefault("MASTER_PORT", args.master_port)
+
         global_rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
@@ -299,7 +351,7 @@ def main():
     if not is_distributed:
         device = torch.device("cuda" if use_cuda else "cpu")
 
-    repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     try:
         repo = Repo(repo_dir)
         commit = repo.head.commit.hexsha[:7]
@@ -448,6 +500,9 @@ def main():
 
     es = utils.EarlyStopping(patience=args.patience)
 
+    # Gradient scaler pour AMP (no-op si AMP desactive)
+    amp_scaler = torch.cuda.amp.GradScaler(enabled=args.amp and use_cuda)
+
     # Resume training if checkpoint specified
     if args.checkpoint:
         model_path = Path(args.checkpoint).expanduser()
@@ -493,8 +548,8 @@ def main():
         t.set_description("Training epoch")
         end = time.time()
         
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed)
-        valid_loss = valid(args, unmix, encoder, device, valid_sampler, is_distributed)
+        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed, scaler=amp_scaler)
+        valid_loss = valid(args, unmix, encoder, device, valid_sampler, is_distributed, use_amp=args.amp)
         
         # Scheduler and early stopping run on all ranks since validation loss is synced
         scheduler.step(valid_loss)

@@ -14,8 +14,6 @@ import torchaudio
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning import Trainer
-import time
-
 
 
 import data
@@ -175,8 +173,11 @@ def get_statistics(args, encoder, dataset):
     encoder = copy.deepcopy(encoder).to("cpu")  # CPU explicite → pas de conflit GPU
     scaler = sklearn.preprocessing.StandardScaler()
     dataset_scaler = copy.deepcopy(dataset)
-    dataset_scaler.random_chunks = False
-    dataset_scaler.seq_duration = None
+    if isinstance(dataset_scaler, data.SourceFolderDataset):
+        dataset_scaler.random_chunks = False
+    else:
+        dataset_scaler.random_chunks = False
+        dataset_scaler.seq_duration = None
     dataset_scaler.samples_per_track = 1
     dataset_scaler.augmentations = None
     dataset_scaler.random_track_mix = False
@@ -359,6 +360,7 @@ def main():
     # use jpg or npy
     torch.manual_seed(args.seed)
     random.seed(args.seed)
+    np.random.seed(args.seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -398,8 +400,6 @@ def main():
         scaler_std = None
     else:
         scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
-
-    max_bin = utils.bandwidth_to_max_bin(train_dataset.sample_rate, args.nfft, args.bandwidth)
 
     max_bin = None
 
