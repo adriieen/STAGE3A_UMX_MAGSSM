@@ -1,6 +1,7 @@
 from typing import Optional, Union
 
 import torch
+import torch.nn as nn
 import os
 import numpy as np
 import torchaudio
@@ -48,6 +49,63 @@ def save_checkpoint(state: dict, is_best: bool, path: str, target: str):
     if is_best:
         # save just the weights
         torch.save(state["state_dict"], os.path.join(path, target + ".pth"))
+
+
+def create_log_linear_matrix(nb_bins, d_out):
+    
+    """Adapting what was originaly implemented in the Open-Unmix to scale the input_mean and input_std 
+    to the dimensions produced by the MAGSSM, mapping the linear n_bins into a log scale with size d_out.
+    """
+    assert nb_bins < d_out, f"Number of frequencies after MAGSSM should be lower than number of bins in the FFT"
+
+    edges = np.logspace(0, np.log10(nb_bins), num=d_out + 1)
+    edges = np.round(edges).astype(int)
+    edges[0] = 0
+    edges[-1] = nb_bins
+
+    W = np.zeros((d_out, nb_bins), dtype = np.float32)
+
+    for i in range(d_out):
+        start, end = edges[i], edges[i+1]
+
+        block_size = end - start
+        W[i, start:end] = 1.0 / block_size
+    
+    return torch.from_numpy(W)
+
+class LogNormalizer(torch.nn.Module):
+    """
+    Encapsulate the former function as a nn.Module
+    The statistics for the n_bins frequencies obtained from the "get_statistics" are mapped to 
+    a size of d_out, respecting a log pooling that is the one we initialize the MAGSSM A matrix with. 
+    """
+
+    def __init__(self, nb_bins, d_out, linear_neg_mean, linear_inv_std):
+
+        W = create_log_linear_matrix(nb_bins, d_out)
+        
+        neg_log_mean = torch.matmul(W, linear_neg_mean)
+        
+        W_squared = W ** 2
+
+        linear_variance = 1.0/ (linear_inv_std ** 2)
+
+        log_variance = torch.matmul(W_squared, linear_variance)
+        log_inv_std = 1.0 / torch.sqrt(log_variance + 1e-8)
+
+
+        self.neg_mean = nn.Parameter(neg_log_mean)
+        self.scale = nn.Parameter(log_inv_std)
+
+    def forward(self, x):
+
+        """
+        Normalizes input x, that is coming from MAGSSM, which is initialized with MEL scale for Im parts.
+        To match the format of UMX, we ask for shape [T,B,2,d_out]
+        """
+        return (x + self.neg_mean) * self.scale
+
+
 
 
 class AverageMeter(object):

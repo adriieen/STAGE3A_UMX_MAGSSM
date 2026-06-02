@@ -87,7 +87,6 @@ def get_statistics(args, encoder, dataset):
 
     # set inital input scaler values
     std = np.maximum(scaler.scale_, 1e-4 * np.max(scaler.scale_))
-
     return scaler.mean_, std
 
 

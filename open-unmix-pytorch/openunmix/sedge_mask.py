@@ -9,6 +9,7 @@ from torch.nn import LSTM, BatchNorm1d, Linear, Parameter
 from filtering import wiener
 from transforms import make_filterbanks, ComplexNorm
 from magssm import MagSSM
+from utils_edge_var import LogNormalizer
 
 sys.path.append('/home/adubois/openunmix/OpenUnmix/SEdge/src')
 from model_edge.sequence_musdbadrien import sedge_sequence
@@ -46,7 +47,6 @@ class SedgeMask(nn.Module):
         nb_layers: int = 3,
         input_mean: Optional[np.ndarray] = None,
         input_scale: Optional[np.ndarray] = None,
-        max_bin: Optional[int] = None,
         hidden_size_factors = None,
         output_size_factors = None,
         n_fft = 4096,
@@ -65,10 +65,6 @@ class SedgeMask(nn.Module):
         super(SedgeMask, self).__init__()
 
         self.nb_output_bins = nb_bins
-        if max_bin:
-            self.nb_bins = max_bin
-        else:
-            self.nb_bins = self.nb_output_bins
 
         self.nb_channels = nb_channels
         self.hidden_size = hidden_size
@@ -76,6 +72,8 @@ class SedgeMask(nn.Module):
 
 
         self.instance_norm = nn.InstanceNorm2d(nb_channels, affine=True)
+
+        self.fc0 = Linear(nb_bins, d_out)
 
         #self.fc1 = Linear(self.nb_bins * nb_channels, hidden_size, bias=False)
         self.fc1 = Linear(d_out * nb_channels, hidden_size, bias=False)
@@ -123,17 +121,20 @@ class SedgeMask(nn.Module):
         self.bn3 = BatchNorm1d(self.nb_output_bins * nb_channels)
 
         if input_mean is not None:
-            input_mean = torch.from_numpy(-input_mean[: self.nb_bins]).float()
+            input_mean = torch.from_numpy(-input_mean).float()
         else:
-            input_mean = torch.zeros(self.nb_bins)
+            input_mean = torch.zeros(nb_bins)
 
         if input_scale is not None:
-            input_scale = torch.from_numpy(1.0 / input_scale[: self.nb_bins]).float()
+            input_scale = torch.from_numpy(1.0 / input_scale).float()
         else:
-            input_scale = torch.ones(self.nb_bins)
+            input_scale = torch.ones(nb_bins)
 
-        self.input_mean = Parameter(input_mean)
-        self.input_scale = Parameter(input_scale)
+
+        self.LogNormalizer = LogNormalizer(nb_bins, d_out, 
+                                           linear_neg_mean= input_mean,
+                                           linear_inv_std= input_scale)
+
 
         self.output_scale = Parameter(torch.ones(self.nb_output_bins).float())
         self.output_mean = Parameter(torch.ones(self.nb_output_bins).float())
@@ -169,17 +170,12 @@ class SedgeMask(nn.Module):
 
         # print("Sortie de magssm = ", x.data.shape) 
         
-        # Normalisation on Freqs et Time for each (Batch, Channel)
-        x = self.instance_norm(x)
 
 
         x = x.permute(3, 0, 1, 2)
         nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape # nb_bins = d_out
 
-  
-        # x = x + self.input_mean
-        # x = x * self.input_scale
-
+        x = self.LogNormalizer(x)
 
 
         x = self.fc1(x.reshape(-1, nb_channels * nb_bins))

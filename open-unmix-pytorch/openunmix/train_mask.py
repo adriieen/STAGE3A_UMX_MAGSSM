@@ -302,17 +302,13 @@ def main():
     with open(Path(target_path, "separator.json"), "w") as outfile:
         outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
-    # if args.checkpoint or args.model or args.debug:
-    #     scaler_mean = None
-    #     scaler_std = None
-    # else:
-    #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
+    if args.checkpoint or args.model or args.debug:
+        scaler_mean = None
+        scaler_std = None
+    else:
+        scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
 
-    max_bin = utils.bandwidth_to_max_bin(train_dataset.sample_rate, args.nfft, args.bandwidth)
-
-    scaler_mean = None
-    scaler_std = None
-    max_bin = None
+    # max_bin = utils.bandwidth_to_max_bin(train_dataset.sample_rate, args.nfft, args.bandwidth)
 
     if args.model: # fine tune model
         print(f"Fine-tuning model from {args.model}")
@@ -333,7 +329,7 @@ def main():
             nb_bins=args.nfft // 2 + 1,
             nb_channels=args.nb_channels,
             hidden_size=args.hidden_size,
-            max_bin=max_bin,
+            max_bin= None,
             nb_layers = args.nb_layers,
             hidden_size_factors = args.hidden_size_factors,
             output_size_factors = args.output_size_factors,

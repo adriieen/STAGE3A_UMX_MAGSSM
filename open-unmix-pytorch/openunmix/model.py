@@ -125,6 +125,9 @@ class OpenUnmix(nn.Module):
         # crop
         x = x[..., : self.nb_bins]
         # shift and scale input to mean=0 std=1 (across all bins)
+
+        print(self.input_mean.shape, self.input_scale.shape)
+
         x = x + self.input_mean
         x = x * self.input_scale
 
