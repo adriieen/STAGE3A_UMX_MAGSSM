@@ -448,8 +448,13 @@ def main():
             std_t  = torch.zeros(nb_bins, dtype=torch.float32)
 
         if is_distributed:
+            # NCCL requires tensors to be on CUDA for collective operations
+            mean_t = mean_t.to(device)
+            std_t  = std_t.to(device)
             dist.broadcast(mean_t, src=0)
             dist.broadcast(std_t,  src=0)
+            mean_t = mean_t.cpu()
+            std_t  = std_t.cpu()
 
         scaler_mean = mean_t.numpy()
         scaler_std  = std_t.numpy()
