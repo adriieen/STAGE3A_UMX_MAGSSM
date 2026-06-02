@@ -36,7 +36,7 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
 
         use_amp = (scaler is not None) and (device.type == "cuda")
         with torch.cuda.amp.autocast(enabled=use_amp):
-            Y_hat = unmix(x)
+            Y_hat = unmix(x) # x is the waveform -- Mixture audio signal 
             Y = encoder(y)
             loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
