@@ -2,7 +2,7 @@ import torch
 
 from typing import Optional
 
-from .ssm_bis import SSM, Progressive_MAGSSM
+from .ssm_bis import SSM, Progressive_SSM
 
 class MIMOSSM(torch.nn.Module):
     def __init__(self,
@@ -17,11 +17,12 @@ class MIMOSSM(torch.nn.Module):
                  output_bias=False,
                  complex_output=True,
                  B_C_init='orthogonal',
+                 C_C_init= None, 
                  stability='abs',
-                 use_magssm = False,
+                 progressive = False,
                  chunk_duration : Optional[int] = None,
                  subsampling_factor = 1,
-                 mel = False
+                 log_distributed_frequencies = False
 
                 ):
         
@@ -35,7 +36,7 @@ class MIMOSSM(torch.nn.Module):
         self.previous_step_scale = step_scale
         self.complex_output = complex_output
 
-        if not use_magssm:
+        if not progressive:
 
             self.seq = SSM(
                 d_in,
@@ -54,7 +55,7 @@ class MIMOSSM(torch.nn.Module):
             )
 
         else:
-            self.seq = Progressive_MAGSSM(
+            self.seq = Progressive_SSM(
                 d_in,
                 d_state,
                 d_out,
@@ -66,10 +67,11 @@ class MIMOSSM(torch.nn.Module):
                 output_bias=output_bias,
                 complex_output=complex_output,
                 B_C_init=B_C_init,
+                C_C_init = C_C_init,
                 ensure_stability=stability,
                 chunk_duration = chunk_duration,
                 subsampling_factor = subsampling_factor,
-                mel = mel
+                log_distributed_frequencies = log_distributed_frequencies
 
             )
             

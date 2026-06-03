@@ -51,9 +51,14 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
         optimizer.zero_grad()
 
         use_amp = (scaler is not None) and (device.type == "cuda")
+        
+        # Precompute STFTs completely outside of autocast and DDP
+        with torch.cuda.amp.autocast(enabled=False):
+            X = encoder(x.float())
+            Y = encoder(y.float())
+
         with torch.cuda.amp.autocast(enabled=use_amp):
-            Y_hat = unmix(x)  # x est la waveform — le modele produit son propre spectrogramme
-            Y = encoder(y)
+            Y_hat = unmix(x, X=X)
             loss = torch.nn.functional.mse_loss(Y_hat, Y)
 
         # Detecter un NaN/Inf avant le backward pour eviter de corrompre les poids
@@ -237,16 +242,16 @@ def main():
                         help = "Number of frequencies in the trainable spectrogram." \
                         "Standard choice is to set it equal to the number of states, but it can be higher... ")
     
-    parser.add_argument("--use_magssm", action="store_true", default = False, 
+    parser.add_argument("--progressive", action="store_true", default = False, 
                         help = "If put as an argument, will use a MAGSSM that will proceed by chunks on the input " \
                         "not to overload the RAM")
     
     parser.add_argument("--chunk-dur", type=float, default = 6.0, 
-                        help = "chunk duration in seconds. Only relevant if flag 'use_magssm' is set." \
+                        help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \
                         "The input sequence will be split into chunks for computation by the Magssm with memory limit.")
 
     parser.add_argument("--mel", action="store_true", default = False,
-                        help = "If put as an argument, will initialize the states of magssm along a MEL bankfliters")
+                        help = "If put as an argument, will initialize the states of magssm along a log_distributed_frequenciesbankfliters")
 
     parser.add_argument("--hidden-size",
         type=int,
@@ -486,7 +491,7 @@ def main():
             device=device,
             use_edge=args.use_edge,
             unidirectional=args.unidirectional,
-            use_magssm=args.use_magssm,
+            progressive=args.progressive,
             chunk_duration=chunk_duration_in_frames,
             mel=args.mel
         ).to(device)

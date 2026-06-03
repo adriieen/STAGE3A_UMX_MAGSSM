@@ -3,9 +3,8 @@ from typing import Optional
 import torch
 from torch.nn import functional as F
 import numpy as np
-
 from .associative_scan import apply_ssm, apply_ssm_progressive
-from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_log_eigenvalues
+from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_eigenvalues
 import math
 
 
@@ -303,7 +302,7 @@ class SSM(torch.nn.Module):
                 #)
 
 
-class Progressive_MAGSSM(torch.nn.Module):
+class Progressive_SSM(torch.nn.Module):
     def __init__(self,
                  d_in: int,
                  d_state: int,
@@ -316,11 +315,12 @@ class Progressive_MAGSSM(torch.nn.Module):
                  output_bias=False,
                  complex_output=False,
                  B_C_init='ones',
+                 C_C_init='convolution',
                  ensure_stability='abs',
                  symmetric=False,
                  chunk_duration = 264600,
                  subsampling_factor = 1,
-                 mel = False,
+                 log_distributed_frequencies= False,
                  samplerate = 44100.0
                  ): 
         """The Modified S5 SSM
@@ -338,17 +338,14 @@ class Progressive_MAGSSM(torch.nn.Module):
         super().__init__()
         self.symmetric = symmetric
 
-        log_sigma, log_omega = make_spectrograms_log_eigenvalues(d_state, samplerate, mel)
+        # self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
 
-        self.log_sigma = torch.nn.Parameter(log_sigma.data)
-        self.log_omega = torch.nn.Parameter(log_omega)
+        self.Lambda = torch.nn.Parameter(make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies))
 
+        self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
 
-        # self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
-
-        self.log_step = torch.nn.Parameter(torch.log(torch.ones(d_state) / samplerate ))
-        # 
-
+        #initializing the lambdas with the structure specified in init.
+        self.Lambda = self.Lambda / torch.exp(self.log_step)
 
         self.discretize = discretize_zoh
 
@@ -407,10 +404,26 @@ class Progressive_MAGSSM(torch.nn.Module):
             B_r = torch.ones(d_state, d_in)
             B_i = torch.zeros(d_state, d_in)
             self.B = torch.nn.Parameter(torch.stack((B_r, B_i), dim=-1))
-            C_r = torch.empty(d_out, d_state)
-            C_r = torch.nn.init.orthogonal_(C_r.T, gain=gain).T
-            C_i = torch.empty(d_out, d_state)
-            C_i = torch.nn.init.orthogonal_(C_i.T, gain=gain).T
+
+            if C_C_init == 'convolution':
+                print("C_init_with_convolution")                           
+                # kernel size of 3 on the states of the SSM
+                C_r = torch.eye(d_out, d_state)
+                for i in range(d_out):
+                    for j in range(d_state):
+                        if j==i+1 or j==i-1:
+                            C_r[i,j] = 1
+               
+                C_i = C_r.clone()
+               
+            else : 
+                # orthogonal initialization of the C matrix
+                C_r = torch.empty(d_out, d_state)
+                C_r = torch.nn.init.orthogonal_(C_r.T, gain=gain).T
+                C_i = torch.empty(d_out, d_state)
+                C_i = torch.nn.init.orthogonal_(C_i.T, gain=gain).T
+
+
             self.C = torch.nn.Parameter(torch.stack((C_r, C_i), dim=-1))
 
         elif B_C_init == 'orthogonal':
@@ -500,7 +513,7 @@ class Progressive_MAGSSM(torch.nn.Module):
         return torch.zeros((*batch_shape, self.C.shape[-2]))
 
     def forward_rnn(self, signal, prev_state):
-        Lambda_c = torch.complex(-torch.exp(self.log_sigma), torch.exp(self.log_omega))
+        Lambda_c = as_complex(self.Lambda)
 
         B_c = as_complex(self.B)
         B_bias_c = as_complex(self.B_bias)
@@ -538,11 +551,18 @@ class Progressive_MAGSSM(torch.nn.Module):
         return y_out, x
 
     def forward(self, signal):
-        Lambda = torch.complex(-torch.exp(self.log_sigma), torch.exp(self.log_omega))
+
+        with torch.no_grad():
+            if self.ensure_stability == 'relu':
+                self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0])
+                # Lambda_c.real = -F.relu(-Lambda_c.real) # Ensure stability
+            elif self.ensure_stability == 'abs':
+                self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
+                # Lambda = torch.complex(-torch.abs(Lambda.real), Lambda.imag)
+
+        Lambda_c = as_complex(self.Lambda)
         step = self.step_scale * torch.exp(self.log_step)
 
-
-        # print('Lambda', Lambda.shape)
 
         B_c = as_complex(self.B)
         B_bias_c = as_complex(self.B_bias)
@@ -550,7 +570,7 @@ class Progressive_MAGSSM(torch.nn.Module):
         C_bias_c = as_complex(self.C_bias)
 
         Lambda_bars, B_bars = self.discretize(
-            Lambda, B_c, B_bias_c, step, self.input_bias)
+            Lambda_c, B_c, B_bias_c, step, self.input_bias)
         if self.input_bias:
             B_bar = B_bars[:, 0:-1]
             B_bias_bar = B_bars[:, -1]
@@ -569,30 +589,24 @@ class Progressive_MAGSSM(torch.nn.Module):
 
 
         total_num_samples = math.ceil(T/h)
-        
+
         out_dtype = torch.complex64 if self.complex_output else torch.float32
         output = torch.zeros(B, total_num_samples, self.d_out, device=signal.device, dtype=out_dtype)
 
         current_index = 0
-
         chunks = torch.split(signal, c, dim=1)
-
         last_state = None
         offset = 0
 
-
         for chunk in chunks:
-            # last_state, out = apply_ssm_progressive(
-            #       Λ,....., last_state = last_state...
-            #         )
 
             last_state, out = apply_ssm_progressive(
                 Lambda_bars, B_bar, B_bias_bar, C_c, C_bias_c, 
                 chunk, 
                 self.complex_output, 
                 last_state=last_state, 
-                subsampling_factor = h,
-                offset = offset
+                subsampling_factor=h,
+                offset=offset
             )
 
             num_samples = out.shape[1]

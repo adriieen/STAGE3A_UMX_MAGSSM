@@ -193,7 +193,7 @@ def apply_ssm_progressive(
 
 
     if last_state is not None : 
-        Bu_elements[:, 0, :] += Lambda_bars[0] * last_state
+        Bu_elements[:, 0, :] += Lambda_bars * last_state
     
 
 
@@ -201,24 +201,23 @@ def apply_ssm_progressive(
 
     if Lambda_bars.ndim == 1:  # Repeat for associative_scan
         Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
-    
 
     # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
-    _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
+    _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements) #B,T,H
     # _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
     
     
     # #downsampling here to limit nb of operation if we dont need full out -----  y_i for i ≠ k*hop_length
     # bc final goal is to downsample by factor hop_length.....
 
-    last_state = xs[:,-1,:]
-
-    xs_subsampled = xs[:,offset::h, :]
+    last_state = xs[:,-1,:].to(torch.float32) # B, H
+    
+    xs_subsampled = xs[:,offset::h, :] #B, T/h, H
      
 
     if complex_output:
         # out = vmap(lambda x: (C @ x))(xs) + C_bias
-        out = xs_subsampled@C.T + C_bias.view(1,1,-1)
+        out = xs_subsampled@C.T + C_bias.view(1,1,-1) # B, T/h, d_out
     else:
         # out = (vmap(lambda x: (C @ x))(xs) + C_bias).real
         out = (xs_subsampled@C.T + C_bias.view(1,1,-1)).real

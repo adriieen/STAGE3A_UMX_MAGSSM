@@ -101,7 +101,7 @@ class LogNormalizer(torch.nn.Module):
     def forward(self, x):
 
         """
-        Normalizes input x, that is coming from MAGSSM, which is initialized with MEL scale for Im parts.
+        Normalizes input x, that is coming from MAGSSM, which is initialized with log_distributed_frequenciesscale for Im parts.
         To match the format of UMX, we ask for shape [T,B,2,d_out]
         """
         return (x + self.neg_mean) * self.scale
@@ -241,7 +241,7 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
 
                     use_edge = results["args"]["use_edge"],
                     unidirectional = results["args"]["unidirectional"],
-                    use_magssm = results["args"]["use_magssm"],
+                    progressive = results["args"]["progressive"],
                     chunk_duration= int(results["args"]["chunk_dur"]*results["args"]["sample_rate"]),
 
                     hidden_size_factors = None if "hidden_size_factors" not in results["args"].keys() 

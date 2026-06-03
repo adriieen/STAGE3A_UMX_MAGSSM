@@ -14,7 +14,7 @@ except ImportError:
 
 
 def make_filterbanks(n_fft=4096, n_hop=1024, center=False, sample_rate=44100.0, method="torch"):
-    window = nn.Parameter(torch.hann_window(n_fft) + 1e-4, requires_grad=False)
+    window = torch.hann_window(n_fft) + 1e-4
 
     if method == "torch":
         encoder = TorchSTFT(n_fft=n_fft, n_hop=n_hop, window=window, center=center)
@@ -78,9 +78,10 @@ class TorchSTFT(nn.Module):
     ):
         super(TorchSTFT, self).__init__()
         if window is None:
-            self.window = nn.Parameter(torch.hann_window(n_fft), requires_grad=False)
+            self.register_buffer('window', torch.hann_window(n_fft))
         else:
-            self.window = window
+            # Detach to avoid DDP treating it as a trainable parameter
+            self.register_buffer('window', window.detach() if isinstance(window, torch.Tensor) else window)
 
         self.n_fft = n_fft
         self.n_hop = n_hop
@@ -161,9 +162,9 @@ class TorchISTFT(nn.Module):
         self.sample_rate = sample_rate
 
         if window is None:
-            self.window = nn.Parameter(torch.hann_window(n_fft) + 1e-4, requires_grad=False)
+            self.register_buffer('window', torch.hann_window(n_fft) + 1e-4)
         else:
-            self.window = window
+            self.register_buffer('window', window.detach() if isinstance(window, torch.Tensor) else window)
 
     def forward(self, X: Tensor, length: Optional[int] = None) -> Tensor:
         shape = X.size()

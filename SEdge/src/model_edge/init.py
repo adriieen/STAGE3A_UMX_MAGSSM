@@ -42,45 +42,26 @@ def make_linear_eigenvalues(N, symmetric = True):
     Lambda = torch.tensor(Lambda, dtype=torch.float)
     return Lambda
 
-import numpy as np
-import torch
-
-def make_spectrograms_log_eigenvalues(N, samplerate, mel = True):
 
 
-    log_sigma = torch.nn.Parameter(torch.log(torch.ones(N) * 2))
-
-    if not mel:  # standard Fourier basis
-        nyq_f =  samplerate / 2 
-        freqs = np.linspace(0, nyq_f, N)
-        freqs = np.maximum(freqs, 1e-7)
-        log_omega = torch.log(torch.tensor(freqs * 2 * np.pi, dtype=torch.float32))
-    
-    else:  # more states resonates on lower frequencies (Mel scale)
-        nyq_freq = samplerate / 2
-        max_mel = 1127 * np.log(1 + nyq_freq / 700)
-        mel_scale = np.linspace(0, max_mel, N)
-        freqs = 700 * (np.exp(mel_scale / 1127) - 1)
-        freqs = np.maximum(freqs, 1e-7)
-        log_omega = torch.log(torch.tensor(freqs * 2 * np.pi, dtype=torch.float32))
-
-    return log_sigma, log_omega
-
-def make_spectrograms_eigenvalues_correction(N, mel = True):
+def make_spectrograms_eigenvalues(N, log_distributed_frequencies= True):
 
     sigma = - torch.ones(N) / 2
 
-    if not mel:
+    if not log_distributed_frequencies:
         omega = torch.linspace(0,torch.pi, N)
     
     else:
-        mel_scale = torch.linspace(0, np.log(1+np.pi), N)
-        omega = (torch.exp(mel_scale) - 1).to(torch.float32)
+        log_scale = torch.linspace(0, np.log(1+np.pi), N)
+        omega = (torch.exp(log_scale) - 1).to(torch.float32)
 
     sigma = sigma.unsqueeze(1)
     omega = omega.unsqueeze(1)
 
-    Lambda = torch.cat((sigma, omega), dim=1)
+    Lambda = sigma * torch.exp(1j*omega)
+    Lambda = Lambda.to(torch.complex64)
+
+    Lambda = torch.cat((Lambda.real, Lambda.imag), dim=1)
     return Lambda
 
 
@@ -210,6 +191,9 @@ def log_step_initializer(dt_min=0.001, dt_max=0.1):
              Returns:
                  sampled log_step (float32)
          """
+
+        # return torch.linspace(np.log(dt_min), np.log(dt_max), shape[0], dtype=torch.float32)
+        
         return uniform(shape, minval=np.log(dt_min), maxval=np.log(dt_max))
         # return torch.rand(shape) * (np.log(dt_max) - np.log(dt_min)) + np.log(dt_min)
 

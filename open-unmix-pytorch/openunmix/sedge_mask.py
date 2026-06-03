@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.nn import LSTM, BatchNorm1d, Linear, Parameter
 from filtering import wiener
 from transforms import make_filterbanks, ComplexNorm
-from magssm import MagSSM
+from magssm import MagSSM, MagSSM_Encoder
 from utils_edge_var import LogNormalizer
 
 sys.path.append('/home/adubois/openunmix/OpenUnmix/SEdge/src')
@@ -57,9 +57,8 @@ class SedgeMask(nn.Module):
         device = None,
         use_edge = False,
         unidirectional = True,
-        use_magssm = False,
         chunk_duration : Optional[int] = None,
-        mel = False
+        log_distributed_frequencies= False
         
     ):
         super(SedgeMask, self).__init__()
@@ -139,16 +138,28 @@ class SedgeMask(nn.Module):
         self.encoder = encoder
         self.device = device
 
-        self.magssm = MagSSM(
-            dim_state = dim_state,
-            d_out = d_out,
+        # self.magssm = MagSSM(
+        #     dim_state = dim_state,
+        #     d_out = d_out,
+        #     device = device,
+        #     log_distributed_frequencies= log_distributed_frequencies,
+        #     chunk_duration = chunk_duration,
+        #     subsampling_factor = n_hop,
+        # ).to(device)
+
+        
+        # TEST : incorporating the whole encoding process into the magssm 
+
+        self.magssm_encoder = MagSSM_Encoder(
+            d_in = 2,
+            dim_state = dim_state
+            d_out = hidden_size,
             device = device,
-            mel = mel,
-            chunk_duration = chunk_duration,
-            subsampling_factor = n_hop,
-
+            log_distributed_frequencies = log_distributed_frequencies,
+            chunk_duration = chunk_duration
+            subsampling_factor = n_hop
         ).to(device)
-
+        # -----------------
 
 
     def freeze(self):
@@ -156,36 +167,44 @@ class SedgeMask(nn.Module):
             p.requires_grad = False
         self.eval()
 
-    def forward(self, x: Tensor) -> Tensor:
-        if self.encoder : X = self.encoder(x)
-        else : raise ValueError('Encoder should not be none')
+    def forward(self, x: Tensor, X: Optional[Tensor] = None) -> Tensor:
+        if X is None:
+            # Single-GPU: compute STFT internally
+            with torch.cuda.amp.autocast(enabled=False):
+                if self.encoder:
+                    X = self.encoder(x.float())
+                else:
+                    raise ValueError('Encoder should not be none')
 
 
         _ , _, _, T = X.data.shape
-        x = self.magssm(x)
-        x = torch.abs(x)    # B, 2, (d_out = nb_magssm_states), nb_samples
+        # x = self.magssm(x)  
+        # x = torch.abs(x)    # B, 2, (d_out = nb_magssm_states), nb_samples
 
-        # print("Sortie de magssm = ", x.data.shape) 
+        # # print("Sortie de magssm = ", x.data.shape) 
         
-        x = x.permute(3, 0, 1, 2)
-        nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape # nb_bins = d_out
+        # x = x.permute(3, 0, 1, 2)
+        # nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape # nb_bins = d_out
 
-        x = self.LogNormalizer(x)
+        # x = self.LogNormalizer(x)
 
 
-        x = self.fc1(x.reshape(-1, nb_channels * nb_bins))
-        x = self.bn1(x)
-        x = x.reshape(nb_frames, nb_samples, self.hidden_size)
-        x = torch.tanh(x)
+        # x = self.fc1(x.reshape(-1, nb_channels * nb_bins))
+        # x = self.bn1(x)
+        # x = x.reshape(nb_frames, nb_samples, self.hidden_size)
+        # x = torch.tanh(x)
 
-        # print("entrée bottleneck = ", x.data.shape)
+
+        # TEST ---------------------- Let's combine fc1 into the magssm pipeline ---------------------
+        x = self.magssm_encoder(x) # B, T, hidden_size
+        x = torch.abs(x)   
+        # ---------------------------
         
         if self.use_edge : 
             sequence_out = self.sedge(x)
         
         else :
             sequence_out = self.lstm(x) 
-
 
 
         x = torch.cat([x, sequence_out], -1)

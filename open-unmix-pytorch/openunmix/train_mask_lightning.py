@@ -284,17 +284,17 @@ def main():
                         help = "Number of frequencies in the trainable spectrogram." \
                         "Standard choice is to set it equal to the number of states, but it can be higher... ")
     
-    parser.add_argument("--use_magssm", action="store_true", default = False, 
+    parser.add_argument("--progressive", action="store_true", default = False, 
                         help = "If put as an argument, the MAGSSM will proceed by chunks on the input " \
                         "not to overload the RAM")
     
-    parser.add_argument("--chunk-dur", type=float, default = 6.0, # equiv to not use_magssm
-                        help = "chunk duration in seconds. Only relevant if flag 'use_magssm' is set." \
+    parser.add_argument("--chunk-dur", type=float, default = 6.0, # equiv to not progressive
+                        help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \
                         "The input sequence will be split into chunks for computation by the Magssm with memory limit.")
 
 
     parser.add_argument("--mel", action="store_true", default = False,
-                        help = "If put as an argument, will initialize the states of magssm along a MEL bankfliters")
+                        help = "If put as an argument, will initialize the states of magssm along a log_distributed_frequenciesbankfliters")
 
 
     parser.add_argument("--hidden-size",
@@ -433,9 +433,9 @@ def main():
             device = device,
             use_edge = args.use_edge,
             unidirectional = args.unidirectional,
-            use_magssm = args.use_magssm,
+            progressive = args.progressive,
             chunk_duration = chunk_duration_in_frames,
-            mel = args.mel
+            log_distributed_frequencies= args.mel
             ).to(device)
 
         total_params = sum(p.numel() for p in unmix.parameters() if p.requires_grad)

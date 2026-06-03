@@ -10,7 +10,7 @@ from torch.utils.checkpoint import checkpoint
 from .associative_scan_bis import apply_ssm, apply_ssm_progressive
 
 
-from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_eigenvalues_correction
+from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_eigenvalues
 import math
 
 
@@ -308,7 +308,7 @@ class SSM(torch.nn.Module):
                 #)
 
 
-class Progressive_MAGSSM(torch.nn.Module):
+class Progressive_SSM(torch.nn.Module):
     def __init__(self,
                  d_in: int,
                  d_state: int,
@@ -321,12 +321,12 @@ class Progressive_MAGSSM(torch.nn.Module):
                  output_bias=False,
                  complex_output=False,
                  B_C_init='ones',
-                 C_C_init='convolution',
+                 C_C_init= None,
                  ensure_stability='abs',
                  symmetric=False,
                  chunk_duration = 264600,
                  subsampling_factor = 1,
-                 mel = False,
+                 log_distributed_frequencies= False,
                  samplerate = 44100.0
                  ): 
         """The Modified S5 SSM
@@ -344,9 +344,14 @@ class Progressive_MAGSSM(torch.nn.Module):
         super().__init__()
         self.symmetric = symmetric
 
-        self.Lambda = torch.nn.Parameter(make_spectrograms_eigenvalues_correction(d_state, mel))
+        # self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
+
+        self.Lambda = torch.nn.Parameter(make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies))
 
         self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
+
+        #initializing the lambdas with the structure specified in init.
+        self.Lambda = self.Lambda / torch.exp(self.log_step)
 
         self.discretize = discretize_zoh
 
@@ -514,7 +519,7 @@ class Progressive_MAGSSM(torch.nn.Module):
         return torch.zeros((*batch_shape, self.C.shape[-2]))
 
     def forward_rnn(self, signal, prev_state):
-        Lambda_c = torch.complex(-torch.exp(self.log_sigma), torch.exp(self.log_omega))
+        Lambda_c = as_complex(self.Lambda)
 
         B_c = as_complex(self.B)
         B_bias_c = as_complex(self.B_bias)
@@ -563,11 +568,7 @@ class Progressive_MAGSSM(torch.nn.Module):
 
         Lambda_c = as_complex(self.Lambda)
         step = self.step_scale * torch.exp(self.log_step)
-        
-        Lambda_c = Lambda_c / step # so that the discrete eigenvalues are indeed the one we wish to initialize with.
 
-
-        # print('Lambda', Lambda.shape)
 
         B_c = as_complex(self.B)
         B_bias_c = as_complex(self.B_bias)
@@ -594,7 +595,7 @@ class Progressive_MAGSSM(torch.nn.Module):
 
 
         total_num_samples = math.ceil(T/h)
-        
+
         out_dtype = torch.complex64 if self.complex_output else torch.float32
         output = torch.zeros(B, total_num_samples, self.d_out, device=signal.device, dtype=out_dtype)
 
@@ -605,14 +606,14 @@ class Progressive_MAGSSM(torch.nn.Module):
 
         for chunk in chunks:
             if self.training:
-                # 1. On crée un tenseur factice qui requiert des gradients
+
                 dummy = torch.zeros(1, device=signal.device, requires_grad=True)
 
-                # 2. On définit une enveloppe locale qui prend le dummy mais l'ignore
+
                 def checkpoint_wrapper(dummy_tensor, *args):
                     return apply_ssm_progressive(*args)
 
-                # 3. On appelle checkpoint avec le dummy en premier argument
+
                 last_state, out = checkpoint(
                     checkpoint_wrapper,
                     dummy, # Le dummy force le checkpointing à s'activer
