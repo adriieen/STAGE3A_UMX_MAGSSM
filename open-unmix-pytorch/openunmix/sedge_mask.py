@@ -11,7 +11,7 @@ from transforms import make_filterbanks, ComplexNorm
 from magssm import MagSSM, MagSSM_Encoder
 from utils_edge_var import LogNormalizer
 
-sys.path.append('/home/adubois/openunmix/OpenUnmix/SEdge/src')
+sys.path.append('/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/SEdge/src')
 from model_edge.sequence_musdbadrien import sedge_sequence
 
 class SedgeMask(nn.Module):
@@ -152,11 +152,11 @@ class SedgeMask(nn.Module):
 
         self.magssm_encoder = MagSSM_Encoder(
             d_in = 2,
-            dim_state = dim_state
+            dim_state = dim_state,
             d_out = hidden_size,
             device = device,
             log_distributed_frequencies = log_distributed_frequencies,
-            chunk_duration = chunk_duration
+            chunk_duration = chunk_duration,
             subsampling_factor = n_hop
         ).to(device)
         # -----------------

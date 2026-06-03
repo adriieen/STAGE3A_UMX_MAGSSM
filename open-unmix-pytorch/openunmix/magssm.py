@@ -11,7 +11,7 @@ from transforms import make_filterbanks, ComplexNorm
 import model
 
 
-sys.path.append('/home/adubois/openunmix/OpenUnmix/SEdge/src')
+sys.path.append('/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/SEdge/src')
 
 
 from model_edge.mimo_ssm import MIMOSSM
@@ -98,19 +98,19 @@ class MagSSM_Encoder(nn.Module):
 
     def __init__(
         self,
+        d_in: int = 2,
         dim_state: int = 129,
         d_out: int = 129,
         device = None,
         chunk_duration : Optional[int] = None,
         subsampling_factor : int = 1024,
         log_distributed_frequencies = False
-
     ):
         
-        super(MagSSM, self).__init__()
+        super(MagSSM_Encoder, self).__init__()
   
         self.mimo = MIMOSSM( 
-            d_in = 1,
+            d_in = d_in,
             d_state = dim_state,
             d_out = d_out,
             progressive = True,

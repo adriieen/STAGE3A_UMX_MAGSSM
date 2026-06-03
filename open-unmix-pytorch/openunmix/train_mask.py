@@ -321,11 +321,11 @@ def main():
     with open(Path(target_path, "separator.json"), "w") as outfile:
         outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
-    if args.checkpoint or args.model or args.debug:
-        scaler_mean = None
-        scaler_std = None
-    else:
-        scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
+    # if args.checkpoint or args.model or args.debug:
+    #     scaler_mean = None
+    #     scaler_std = None
+    # else:
+    #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
 
     if args.model: # fine tune model
         print(f"Fine-tuning model from {args.model}")
@@ -340,6 +340,8 @@ def main():
         chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate)
         d_out = args.nb_magssm_states if args.d_out is None else args.d_out
 
+        scaler_mean, scaler_std = None, None
+        
         unmix = sedge_mask.SedgeMask(
             input_mean=scaler_mean,
             input_scale=scaler_std,
