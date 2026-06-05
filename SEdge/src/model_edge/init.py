@@ -46,7 +46,7 @@ def make_linear_eigenvalues(N, symmetric = True):
 
 def make_spectrograms_eigenvalues(N, log_distributed_frequencies= True):
 
-    sigma = - torch.ones(N) / 2
+    sigma = - torch.ones(N) 
 
     if not log_distributed_frequencies:
         omega = torch.linspace(0,torch.pi, N)

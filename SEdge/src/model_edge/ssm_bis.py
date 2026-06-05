@@ -562,11 +562,15 @@ class Progressive_SSM(torch.nn.Module):
 
     def forward(self, signal):
 
+        eps_stability = 1e-3
+
         with torch.no_grad():
             if self.ensure_stability == 'relu':
+                self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0] + eps_stability) - eps_stability
                 self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0])
                 # Lambda_c.real = -F.relu(-Lambda_c.real) # Ensure stability
             elif self.ensure_stability == 'abs':
+                self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0]).clamp(min=eps_stability)
                 self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
                 # Lambda = torch.complex(-torch.abs(Lambda.real), Lambda.imag)
 
