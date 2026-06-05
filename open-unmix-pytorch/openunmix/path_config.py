@@ -77,6 +77,7 @@ def _detect_new_amp_api(config: dict) -> bool:
 # Ces variables sont initialisées après le premier appel à setup_paths().
 _USE_NEW_AMP_API: bool = False
 _AMP_INITIALIZED: bool = False
+_SETUP_DONE: bool = False  # garde : setup_paths() n'affiche le message qu'une fois
 
 
 def amp_autocast(enabled: bool = True, device_type: str = "cuda"):
@@ -156,19 +157,22 @@ def setup_paths(add_openunmix_src: bool = False) -> dict:
     Lit machine.yaml, ajoute les chemins nécessaires à sys.path,
     et configure les helpers AMP (amp_autocast / amp_grad_scaler).
 
+    Idempotente : si elle a déjà été appelée, elle ne relit pas le fichier
+    et n'affiche pas le message une deuxième fois.
+
     Args:
         add_openunmix_src: si True, ajoute aussi openunmix_src au sys.path.
 
     Returns:
         dict: le contenu brut du fichier machine.yaml (pour usage éventuel).
     """
-    global _USE_NEW_AMP_API, _AMP_INITIALIZED
+    global _USE_NEW_AMP_API, _AMP_INITIALIZED, _SETUP_DONE
 
     yaml_path = _find_machine_yaml()
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
 
-    # --- Chemins sys.path ---
+    # --- Chemins sys.path (toujours appliqués pour couvrir add_openunmix_src) ---
     sedge_src = config.get("sedge_src")
     if sedge_src is None:
         raise KeyError(
@@ -187,11 +191,12 @@ def setup_paths(add_openunmix_src: bool = False) -> dict:
             if openunmix_src not in sys.path:
                 sys.path.insert(0, openunmix_src)
 
-    # --- Configuration AMP ---
-    _USE_NEW_AMP_API = _detect_new_amp_api(config)
-    _AMP_INITIALIZED = True
-
-    amp_label = "nouvelle (torch.amp.*)" if _USE_NEW_AMP_API else "ancienne (torch.cuda.amp.*)"
-    print(f"[path_config] AMP API : {amp_label} | sedge_src : {sedge_src}")
+    # --- Configuration AMP (et affichage) : une seule fois ---
+    if not _SETUP_DONE:
+        _USE_NEW_AMP_API = _detect_new_amp_api(config)
+        _AMP_INITIALIZED = True
+        _SETUP_DONE = True
+        amp_label = "nouvelle (torch.amp.*)" if _USE_NEW_AMP_API else "ancienne (torch.cuda.amp.*)"
+        print(f"[path_config] AMP API : {amp_label} | sedge_src : {sedge_src}")
 
     return config

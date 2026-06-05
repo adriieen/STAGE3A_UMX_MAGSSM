@@ -626,7 +626,8 @@ class Progressive_SSM(torch.nn.Module):
                     self.complex_output, 
                     last_state, 
                     h,
-                    offset
+                    offset,
+                    use_reentrant=False,
                 ) # type: ignore
             else:
                 # Mode évaluation/validation (pas de checkpointing)

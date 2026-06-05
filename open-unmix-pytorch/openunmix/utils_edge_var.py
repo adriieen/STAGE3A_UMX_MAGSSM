@@ -69,6 +69,11 @@ def create_log_linear_matrix(nb_bins, d_out):
         start, end = edges[i], edges[i+1]
 
         block_size = end - start
+        if block_size == 0:
+            # Deux bords identiques après arrondi (possible aux basses fréquences
+            # du log-spacing quand d_out est grand) : cet état SSM reste à zéro,
+            # il ne contribue pas à la normalisation.
+            continue
         W[i, start:end] = 1.0 / block_size
     
     return torch.from_numpy(W) 
