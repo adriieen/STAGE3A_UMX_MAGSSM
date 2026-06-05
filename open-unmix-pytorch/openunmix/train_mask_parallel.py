@@ -72,10 +72,13 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
 
         if use_amp:
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
             optimizer.step()
 
         losses.update(loss.item(), Y.size(1))
@@ -243,16 +246,13 @@ def main():
                         help = "Number of frequencies in the trainable spectrogram." \
                         "Standard choice is to set it equal to the number of states, but it can be higher... ")
     
-    parser.add_argument("--progressive", action="store_true", default = False, 
-                        help = "If put as an argument, will use a MAGSSM that will proceed by chunks on the input " \
-                        "not to overload the RAM")
-    
-    parser.add_argument("--chunk-dur", type=float, default = 6.0, 
+    parser.add_argument("--chunk-dur", type=float, default = 6.0, # equiv to not progressive
                         help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \
-                        "The input sequence will be split into chunks for computation by the Magssm with memory limit.")
+                        "The input sequence will be split into chunks for computation by the SSM module")
 
     parser.add_argument("--mel", action="store_true", default = False,
-                        help = "If put as an argument, will initialize the states of magssm along a log_distributed_frequenciesbankfliters")
+                        help = "If put as an argument, will initialize the argument of the eigenvalues of the A-matrix " \
+                        "according to a log scale to enhance resolution in the lower frequency domain")
 
     parser.add_argument("--hidden-size",
         type=int,
@@ -438,32 +438,7 @@ def main():
         with open(Path(target_path, "separator.json"), "w") as outfile:
             outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
-    max_bin = None
-
-    if args.checkpoint or args.model or args.debug:
-        scaler_mean = None
-        scaler_std = None
-    else:
-        nb_bins = args.nfft // 2 + 1
-        if global_rank == 0:
-            scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
-            mean_t = torch.tensor(scaler_mean, dtype=torch.float32)
-            std_t  = torch.tensor(scaler_std,  dtype=torch.float32)
-        else:
-            mean_t = torch.zeros(nb_bins, dtype=torch.float32)
-            std_t  = torch.zeros(nb_bins, dtype=torch.float32)
-
-        if is_distributed:
-            # NCCL requires tensors to be on CUDA for collective operations
-            mean_t = mean_t.to(device)
-            std_t  = std_t.to(device)
-            dist.broadcast(mean_t, src=0)
-            dist.broadcast(std_t,  src=0)
-            mean_t = mean_t.cpu()
-            std_t  = std_t.cpu()
-
-        scaler_mean = mean_t.numpy()
-        scaler_std  = std_t.numpy()
+    scaler_mean, scaler_std = None, None
 
     if args.model: # fine tune model
         print_rank0(f"Fine-tuning model from {args.model}")
@@ -471,6 +446,15 @@ def main():
             args.target, model_str_or_path=args.model, device=device, pretrained=True, magssm=True
         )[args.target]
         unmix = unmix.to(device)
+        # Réinitialiser les running stats du BatchNorm héritées du modèle source
+        # (évite les NaN en validation quand la taille du modèle a changé)
+        _nb_bn_reset = 0
+        for m in unmix.modules():
+            if isinstance(m, torch.nn.BatchNorm1d):
+                m.reset_running_stats()
+                _nb_bn_reset += 1
+        print_rank0(f"[INFO] Running stats réinitialisées pour {_nb_bn_reset} couche(s) BatchNorm1d")
+
     else:
         chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate)
         d_out = args.nb_magssm_states if args.d_out is None else args.d_out
@@ -492,9 +476,8 @@ def main():
             device=device,
             use_edge=args.use_edge,
             unidirectional=args.unidirectional,
-            progressive=args.progressive,
             chunk_duration=chunk_duration_in_frames,
-            mel=args.mel
+            log_distributed_frequencies=args.mel
         ).to(device)
 
         total_params = sum(p.numel() for p in unmix.parameters() if p.requires_grad)
