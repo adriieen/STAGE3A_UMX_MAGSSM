@@ -3,3 +3,5 @@ outputs/
 evals/
 fig/
 night_runs/
+runs/
+machine.yaml

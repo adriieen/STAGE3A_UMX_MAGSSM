@@ -19,6 +19,7 @@ import utils
 import transforms
 import sedge_mask
 import utils_edge_var
+from path_config import amp_autocast, amp_grad_scaler
 
 
 tqdm.monitor_interval = 0
@@ -35,7 +36,7 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
         optimizer.zero_grad()
 
         use_amp = (scaler is not None) and (device.type == "cuda")
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with amp_autocast(enabled=use_amp):
             Y_hat = unmix(x) # x is the waveform -- Mixture audio signal 
             Y = encoder(y)
             loss = torch.nn.functional.mse_loss(Y_hat, Y)
@@ -72,7 +73,7 @@ def valid(args, unmix, encoder, device, valid_sampler, use_amp=False):
         for x, y in valid_sampler:
             x, y = x.to(device), y.to(device)
 
-            with torch.cuda.amp.autocast(enabled=use_amp and (device.type == "cuda")):
+            with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 Y_hat = unmix(x)
                 Y = encoder(y)
                 loss = torch.nn.functional.mse_loss(Y_hat, Y)
@@ -413,7 +414,7 @@ def main():
     es = utils.EarlyStopping(patience=args.patience)
 
     # Initialize gradient scaler for AMP
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and use_cuda)
+    scaler = amp_grad_scaler(enabled=args.amp and use_cuda)
 
     # if a checkpoint is specified: resume training
     if args.checkpoint:

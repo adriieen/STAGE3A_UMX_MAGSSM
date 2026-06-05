@@ -14,7 +14,8 @@ from filtering import wiener
 from transforms import make_filterbanks, ComplexNorm
 
 
-sys.path.append('/home/adubois/openunmix/OpenUnmix/SEdge/src')
+from path_config import setup_paths
+setup_paths()
 
 from model_edge.sequence_musdbadrien import sedge_sequence
 

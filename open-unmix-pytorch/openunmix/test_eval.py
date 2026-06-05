@@ -1,6 +1,7 @@
 import torch
 import sys
-sys.path.append('/home/adubois/openunmix/OpenUnmix/open-unmix-pytorch/openunmix')
+from path_config import setup_paths
+setup_paths(add_openunmix_src=True)
 import utils_edge_var
 
 model_path = '/home/adubois/openunmix/OpenUnmix/outputs/500ep/magssm'

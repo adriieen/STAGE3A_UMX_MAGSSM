@@ -11,7 +11,8 @@ from transforms import make_filterbanks, ComplexNorm
 import model
 
 
-sys.path.append('/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/SEdge/src')
+from path_config import setup_paths
+setup_paths()
 
 
 from model_edge.mimo_ssm import MIMOSSM

@@ -11,7 +11,8 @@ from transforms import make_filterbanks, ComplexNorm
 from magssm import MagSSM, MagSSM_Encoder
 from utils_edge_var import LogNormalizer
 
-sys.path.append('/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/SEdge/src')
+from path_config import setup_paths, amp_autocast
+setup_paths()
 from model_edge.sequence_musdbadrien import sedge_sequence
 
 class SedgeMask(nn.Module):
@@ -176,7 +177,7 @@ class SedgeMask(nn.Module):
     def forward(self, x: Tensor, X: Optional[Tensor] = None) -> Tensor:
         if X is None:
             # Single-GPU: compute STFT internally
-            with torch.cuda.amp.autocast(enabled=False):
+            with amp_autocast(enabled=False):
                 if self.encoder:
                     X = self.encoder(x.float())
                 else:

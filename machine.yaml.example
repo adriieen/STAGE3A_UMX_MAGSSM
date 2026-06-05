@@ -1,0 +1,16 @@
+# Fichier de configuration LOCAL — propre à chaque machine.
+# NE PAS versionner (déjà dans .gitignore).
+# Copier ce fichier en le renommant 'machine.yaml' et adapter les chemins.
+
+# Chemin vers le répertoire src/ de SEdge (contient le dossier model_edge/)
+sedge_src: /chemin/vers/ton/SEdge/src
+
+# Chemin vers le répertoire openunmix/ du sous-projet open-unmix-pytorch
+# (utile si on lance des scripts depuis un autre dossier)
+openunmix_src: /chemin/vers/ton/open-unmix-pytorch/openunmix
+
+# Environnement Python / version PyTorch utilisé sur cette machine :
+#   "3.7"  → ancienne API AMP : torch.cuda.amp.autocast(...)
+#   "3.10" → nouvelle API AMP : torch.amp.autocast("cuda", ...)
+# Laisser absent (ou commenter) pour auto-détection via torch.__version__.
+pytorch_env: "3.7"
