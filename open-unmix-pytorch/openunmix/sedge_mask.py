@@ -72,8 +72,8 @@ class SedgeMask(nn.Module):
         self.fc0 = Linear(nb_bins, d_out)
 
         #self.fc1 = Linear(self.nb_bins * nb_channels, hidden_size, bias=False)
-        self.fc1 = Linear(d_out * nb_channels, hidden_size, bias=False)
-        self.bn1 = BatchNorm1d(hidden_size)
+        # self.fc1 = Linear(d_out * nb_channels, hidden_size, bias=False)
+        # self.bn1 = BatchNorm1d(hidden_size)
 
         if hidden_size_factors == None : 
             hidden_size_factors = np.array([1 for _ in range(int(nb_layers))]) 
@@ -107,14 +107,20 @@ class SedgeMask(nn.Module):
 
         fc2_hiddensize = hidden_size * 2
         self.fc2 = Linear(in_features=fc2_hiddensize, out_features=hidden_size, bias=False)
-        self.bn2 = BatchNorm1d(hidden_size)
+
+        self.ln2 = nn.LayerNorm(hidden_size)
+
+        # self.bn2 = BatchNorm1d(hidden_size)
 
         self.fc3 = Linear(
             in_features=hidden_size,
             out_features=self.nb_output_bins * nb_channels,
             bias=False,
         )
-        self.bn3 = BatchNorm1d(self.nb_output_bins * nb_channels)
+
+        self.ln3 = nn.LayerNorm(self.nb_output_bins * nb_channels)
+
+        # self.bn3 = BatchNorm1d(self.nb_output_bins * nb_channels)
 
         if input_mean is not None:
             input_mean = torch.from_numpy(-input_mean).float()
@@ -196,9 +202,15 @@ class SedgeMask(nn.Module):
 
 
         # TEST ---------------------- Let's combine fc1 into the magssm pipeline ---------------------
-        x = self.magssm_encoder(x) # B, T, hidden_size
-        x = torch.abs(x)   
+
+        nb_samples,  nb_channels, seq_dur= x.data.shape 
+        x = self.magssm_encoder(x) # B, T=seq_dur/h , hidden_size
+        x = torch.abs(x) + 1e-8   # eps de stabilité : évite les NaN dans BatchNorm si signal = silence
+
+        nb_samples, nb_frames, _ = x.data.shape 
+        
         # ---------------------------
+
         
         if self.use_edge : 
             sequence_out = self.sedge(x)
@@ -210,14 +222,17 @@ class SedgeMask(nn.Module):
         x = torch.cat([x, sequence_out], -1)
 
         x = self.fc2(x.reshape(-1, x.shape[-1]))
-        x = self.bn2(x)
+        x = self.ln2(x)
+
+        # x = self.bn2(x)
         x = F.relu(x)
 
         # print("input FC3 = ", x.data.shape)
 
 
         x = self.fc3(x)
-        x = self.bn3(x)
+        x = self.ln3(x)
+        # x = self.bn3(x)
 
         x = x.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)
         x *= self.output_scale

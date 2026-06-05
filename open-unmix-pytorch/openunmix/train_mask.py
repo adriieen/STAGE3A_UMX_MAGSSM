@@ -48,10 +48,13 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
 
         if use_amp:
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
             optimizer.step()
 
         losses.update(loss.item(), Y.size(1))
@@ -326,6 +329,11 @@ def main():
     #     scaler_std = None
     # else:
     #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
+    # if args.checkpoint or args.model or args.debug:
+    #     scaler_mean = None
+    #     scaler_std = None
+    # else:
+    #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
 
     if args.model: # fine tune model
         print(f"Fine-tuning model from {args.model}")
@@ -333,12 +341,22 @@ def main():
             args.target, model_str_or_path=args.model, device=device, pretrained=True, magssm=True
         )[args.target]
         unmix = unmix.to(device)
+        # Réinitialiser les running stats du BatchNorm héritées du modèle source
+        # (évite les NaN en validation quand la taille du modèle a changé)
+        _nb_bn_reset = 0
+        for m in unmix.modules():
+            if isinstance(m, torch.nn.BatchNorm1d):
+                m.reset_running_stats()
+                _nb_bn_reset += 1
+        print(f"[INFO] Running stats réinitialisées pour {_nb_bn_reset} couche(s) BatchNorm1d")
 
 
     else:
         
         chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate)
         d_out = args.nb_magssm_states if args.d_out is None else args.d_out
+
+        scaler_mean, scaler_std = None, None 
 
         scaler_mean, scaler_std = None, None
         

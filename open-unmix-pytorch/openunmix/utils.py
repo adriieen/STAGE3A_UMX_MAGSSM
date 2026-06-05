@@ -89,7 +89,9 @@ class EarlyStopping(object):
             return False
 
         if np.isnan(metrics):
-            return True
+            # Epoque ignorée (ex: tous les batchs de validation étaient NaN/Inf)
+            # On ne penalise pas le compteur d'epochs sans amélioration
+            return False
 
         if self.is_better(metrics, self.best):
             self.num_bad_epochs = 0

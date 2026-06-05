@@ -340,13 +340,14 @@ class Progressive_SSM(torch.nn.Module):
 
         # self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
 
-        self.Lambda = torch.nn.Parameter(make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies))
+        Lambda = make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies)
 
         self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
 
         #initializing the lambdas with the structure specified in init.
-        self.Lambda = self.Lambda / torch.exp(self.log_step)
+        Lambda = Lambda / torch.exp(self.log_step)[:, None]
 
+        self.Lambda = torch.nn.Parameter(Lambda)
         self.discretize = discretize_zoh
 
         self.input_bias = input_bias

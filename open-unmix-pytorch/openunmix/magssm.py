@@ -98,7 +98,7 @@ class MagSSM_Encoder(nn.Module):
 
     def __init__(
         self,
-        d_in: int = 2,
+        d_in : int = 2,
         dim_state: int = 129,
         d_out: int = 129,
         device = None,

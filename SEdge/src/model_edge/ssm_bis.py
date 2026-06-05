@@ -36,7 +36,9 @@ def discretize_zoh(Lambda, B, B_bias, Delta, bias):
     else:
         B_concat = B
     Lambda_bar = torch.exp(Lambda * Delta)
-    B_bar = ((Lambda_bar - 1)/Lambda)[..., None] * B_concat
+    # Formule ZOH stable : quand Lambda→0, (exp(L*Δ)-1)/L → Δ (limite analytique)
+    safe_Lambda = torch.where(Lambda.abs() < 1e-6, torch.ones_like(Lambda), Lambda)
+    B_bar = ((Lambda_bar - 1) / safe_Lambda)[..., None] * B_concat
     return Lambda_bar, B_bar
 
 class SSM(torch.nn.Module):
@@ -346,12 +348,14 @@ class Progressive_SSM(torch.nn.Module):
 
         # self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
 
-        Lambda = torch.nn.Parameter(make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies))
+        Lambda = make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies)
 
         self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
 
         #initializing the lambdas with the structure specified in init.
-        self.Lambda = Lambda / torch.exp(self.log_step)[:, None]
+        Lambda = Lambda / torch.exp(self.log_step)[:, None]
+
+        self.Lambda = torch.nn.Parameter(Lambda)
 
         self.discretize = discretize_zoh
 

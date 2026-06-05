@@ -236,12 +236,12 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
                     nb_bins = results["args"]["nfft"] // 2 + 1,
                     nb_channels=results["args"]["nb_channels"],
                     hidden_size=results["args"]["hidden_size"],
-                    max_bin=state["input_mean"].shape[0],
+                    # max_bin=state["input_mean"].shape[0],
                     nb_layers = 3 if "nb_layers" not in results["args"].keys() else results["args"]["nb_layers"],
 
                     use_edge = results["args"]["use_edge"],
                     unidirectional = results["args"]["unidirectional"],
-                    progressive = results["args"]["progressive"],
+                    # progressive = results["args"]["progressive"],
                     chunk_duration= int(results["args"]["chunk_dur"]*results["args"]["sample_rate"]),
 
                     hidden_size_factors = None if "hidden_size_factors" not in results["args"].keys() 
@@ -254,6 +254,7 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
                     dim_state = results["args"]["nb_magssm_states"],
                     d_out = results["args"]["nb_magssm_states"] if results["args"]["d_out"] is None 
                         else results["args"]["d_out"],
+                    log_distributed_frequencies=results["args"]["mel"],
 
                     encoder = encoder,
                     device = device
