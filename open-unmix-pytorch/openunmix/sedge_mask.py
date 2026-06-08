@@ -60,7 +60,7 @@ class SedgeMask(nn.Module):
         unidirectional = True,
         chunk_duration : Optional[int] = None,
         log_distributed_frequencies= False,
-        conv_downsample_factor: int = 4,   # facteur de downsampling temporel via Conv2D
+        conv_downsample_factor: int = 8,   # facteur de downsampling temporel via Conv2D
         
     ):
         super(SedgeMask, self).__init__()
@@ -172,31 +172,36 @@ class SedgeMask(nn.Module):
             chunk_duration = chunk_duration,
             subsampling_factor = ssm_subsampling
         ).to(device)
-        # -----------------
-
-        # Convolutions 2D pour compresser temporellement d'un facteur conv_downsample_factor.
-        # Architecture : 2 couches successives, chacune divise T par sqrt(conv_downsample_factor).
-        # On traite le tenseur comme (B, 1, T_ssm, hidden_size) → Conv2d opère sur (T, F).
-        # stride=(2,1) sur chaque couche → facteur total = 4 pour conv_downsample_factor=4.
-        # Padding=(1,1) conserve hidden_size intact (padding symétrique sur axe fréquentiel).
-        half_factor = conv_downsample_factor // 2   # stride par couche (ex: 2 si factor=4)
+        # Convolutions 2D pour compresser temporellement d'un facteur conv_downsample_factor=8.
+        # 3 couches de stride=2 chacune → facteur total = 2³ = 8
+        # On traite le tenseur comme (B, 1, T_ssm, hidden_size) → Conv2d opère sur (T, H).
+        # Padding = (kernel-1)//2 sur chaque axe → conserve hidden_size intact à stride=1.
         self.conv_downsample = nn.Sequential(
-            # Couche 1 : (B, 1, T_ssm, H) → (B, 8, T_ssm/2, H)
+            # Couche 1 : (B, 1,  T_ssm,   H) → (B, 8,  T_ssm/2, H)
             nn.Conv2d(
                 in_channels=1,
                 out_channels=8,
-                kernel_size=(3, 3),
-                stride=(half_factor, 1),
-                padding=(1, 1),
+                kernel_size=(7, 7),
+                stride=(2, 1),        
+                padding=(3, 3),       
             ),
             nn.GELU(),
-            # Couche 2 : (B, 8, T_ssm/2, H) → (B, 1, T_stft, H)
+            # Couche 2 : (B, 8,  T_ssm/2, H) → (B, 16, T_ssm/4, H)
             nn.Conv2d(
                 in_channels=8,
+                out_channels=16,
+                kernel_size=(5, 5),
+                stride=(2, 1),        
+                padding=(2, 2),       
+            ),
+            nn.GELU(),
+            # Couche 3 : (B, 16, T_ssm/4, H) → (B, 1,  T_stft,  H)
+            nn.Conv2d(
+                in_channels=16,
                 out_channels=1,
                 kernel_size=(3, 3),
-                stride=(half_factor, 1),
-                padding=(1, 1),
+                stride=(2, 1),        
+                padding=(1, 1),      
             ),
             nn.GELU(),
         )
