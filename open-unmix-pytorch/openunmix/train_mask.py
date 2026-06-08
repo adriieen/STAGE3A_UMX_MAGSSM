@@ -589,9 +589,10 @@ def main():
             if s.get("n_nan_params", 0) > 0:
                 print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: NaN dans Lambda ({s['n_nan_params']} params)")
             elif s.get("n_unstable", 0) > 0:
-                print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: {s['n_unstable']} états instables (|Λbar|>1), re_max={s['re_max']:.3e}")
-            elif s.get("re_max", -1) is not None and s["re_max"] > -1e-3:
-                print(f"[Lambda] ! EPOCH {epoch} — {mod_name}: re_max={s['re_max']:.3e} (proche de 0)")
+                print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: {s['n_unstable']} états instables (Re(Λ·Δ)>0), ld_re_max={s['ld_re_max']:.3e}")
+            elif s.get("ld_re_max") is not None and s["ld_re_max"] > -1e-3:
+                print(f"[Lambda] ! EPOCH {epoch} — {mod_name}: ld_re_max={s['ld_re_max']:.3e} (Re(Λ·Δ) proche de 0)")
+
 
         train_times.append(time.time() - end)
 

@@ -52,7 +52,9 @@ class OpenUnmix(nn.Module):
 
         self.fc1 = Linear(self.nb_bins * nb_channels, hidden_size, bias=False)
 
-        self.bn1 = BatchNorm1d(hidden_size)
+        # self.bn1 = BatchNorm1d(hidden_size)
+
+        self.ln1 = nn.LayerNorm(hidden_size)
 
         if unidirectional:
             lstm_hidden_size = hidden_size
@@ -71,15 +73,17 @@ class OpenUnmix(nn.Module):
         fc2_hiddensize = hidden_size * 2
         self.fc2 = Linear(in_features=fc2_hiddensize, out_features=hidden_size, bias=False)
 
-        self.bn2 = BatchNorm1d(hidden_size)
+        # self.bn2 = BatchNorm1d(hidden_size)
+        self.ln2 = nn.LayerNorm(hidden_size)
 
         self.fc3 = Linear(
             in_features=hidden_size,
             out_features=self.nb_output_bins * nb_channels,
             bias=False,
         )
-
-        self.bn3 = BatchNorm1d(self.nb_output_bins * nb_channels)
+        
+        self.ln3 = nn.LayerNorm(self.nb_output_bins * nb_channels)
+        # self.bn3 = BatchNorm1d(self.nb_output_bins * nb_channels)
 
         if input_mean is not None:
             input_mean = torch.from_numpy(-input_mean[: self.nb_bins]).float()
@@ -134,7 +138,8 @@ class OpenUnmix(nn.Module):
         # and encode to (nb_frames*nb_samples, hidden_size)
         x = self.fc1(x.reshape(-1, nb_channels * self.nb_bins))
         # normalize every instance in a batch
-        x = self.bn1(x)
+        # x = self.bn1(x)
+        x = self.ln1(x)
         x = x.reshape(nb_frames, nb_samples, self.hidden_size)
         # squash range ot [-1, 1]
         x = torch.tanh(x)
@@ -147,13 +152,15 @@ class OpenUnmix(nn.Module):
 
         # first dense stage + batch norm
         x = self.fc2(x.reshape(-1, x.shape[-1]))
-        x = self.bn2(x)
+        # x = self.bn2(x)
+        x = self.ln2(x)
 
         x = F.relu(x)
 
         # second dense stage + layer norm
         x = self.fc3(x)
-        x = self.bn3(x)
+        # x = self.bn3(x)
+        x = self.ln3(x)
 
         # reshape back to original dim
         x = x.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)

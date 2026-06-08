@@ -59,16 +59,17 @@ class SedgeMask(nn.Module):
         use_edge = False,
         unidirectional = True,
         chunk_duration : Optional[int] = None,
-        log_distributed_frequencies= False
+        log_distributed_frequencies= False,
+        conv_downsample_factor: int = 4,   # facteur de downsampling temporel via Conv2D
         
     ):
         super(SedgeMask, self).__init__()
 
         self.nb_output_bins = nb_bins
-
         self.nb_channels = nb_channels
         self.hidden_size = hidden_size
         self.use_edge = use_edge
+        self.conv_downsample_factor = conv_downsample_factor
 
         # self.fc0 = Linear(nb_bins, d_out)
 
@@ -157,7 +158,10 @@ class SedgeMask(nn.Module):
         # ).to(device)
 
         
-        # TEST : incorporating the whole encoding process into the magssm 
+        # TEST : incorporating the whole encoding process into the magssm
+        # Le SSM sous-échantillonne par n_hop // conv_downsample_factor ;
+        # les convolutions 2D ramèneront ensuite T au même niveau que la STFT classique.
+        ssm_subsampling = max(1, n_hop // conv_downsample_factor)
 
         self.magssm_encoder = MagSSM_Encoder(
             d_in = 2,
@@ -166,9 +170,36 @@ class SedgeMask(nn.Module):
             device = device,
             log_distributed_frequencies = log_distributed_frequencies,
             chunk_duration = chunk_duration,
-            subsampling_factor = n_hop
+            subsampling_factor = ssm_subsampling
         ).to(device)
         # -----------------
+
+        # Convolutions 2D pour compresser temporellement d'un facteur conv_downsample_factor.
+        # Architecture : 2 couches successives, chacune divise T par sqrt(conv_downsample_factor).
+        # On traite le tenseur comme (B, 1, T_ssm, hidden_size) → Conv2d opère sur (T, F).
+        # stride=(2,1) sur chaque couche → facteur total = 4 pour conv_downsample_factor=4.
+        # Padding=(1,1) conserve hidden_size intact (padding symétrique sur axe fréquentiel).
+        half_factor = conv_downsample_factor // 2   # stride par couche (ex: 2 si factor=4)
+        self.conv_downsample = nn.Sequential(
+            # Couche 1 : (B, 1, T_ssm, H) → (B, 8, T_ssm/2, H)
+            nn.Conv2d(
+                in_channels=1,
+                out_channels=8,
+                kernel_size=(3, 3),
+                stride=(half_factor, 1),
+                padding=(1, 1),
+            ),
+            nn.GELU(),
+            # Couche 2 : (B, 8, T_ssm/2, H) → (B, 1, T_stft, H)
+            nn.Conv2d(
+                in_channels=8,
+                out_channels=1,
+                kernel_size=(3, 3),
+                stride=(half_factor, 1),
+                padding=(1, 1),
+            ),
+            nn.GELU(),
+        )
 
 
     def freeze(self):
@@ -206,12 +237,22 @@ class SedgeMask(nn.Module):
 
         # TEST ---------------------- Let's combine fc1 into the magssm pipeline ---------------------
 
-        nb_samples,  nb_channels, seq_dur= x.data.shape 
-        x = self.magssm_encoder(x) # B, T=seq_dur/h , hidden_size
-        x = torch.abs(x) + 1e-8   # eps de stabilité : évite les NaN dans BatchNorm si signal = silence
-
-        nb_samples, nb_frames, _ = x.data.shape 
+        nb_samples, nb_channels, seq_dur = x.data.shape
+        # SSM : sous-échantillonne par n_hop // conv_downsample_factor
+        # → sortie (B, T_ssm = conv_downsample_factor * T_stft, hidden_size)
         
+        x = self.magssm_encoder(x)
+
+        x = torch.abs(x)
+
+        # Convolutions 2D : (B, T_ssm, H) → (B, 1, T_ssm, H) pour Conv2d
+        # puis downsample temporel par conv_downsample_factor → (B, T_stft, H)
+        x = x.unsqueeze(1)                   # (B, 1, T_ssm, H)
+        x = self.conv_downsample(x)          # (B, 1, T_stft, H)
+        x = x.squeeze(1)                     # (B, T_stft, H)
+
+        nb_samples, nb_frames, _ = x.data.shape
+
         # ---------------------------
 
         
@@ -219,7 +260,7 @@ class SedgeMask(nn.Module):
             sequence_out = self.sedge(x)
         
         else :
-            sequence_out = self.lstm(x) 
+            sequence_out, _ = self.lstm(x)  # LSTM renvoie (output, (h_n, c_n)) — on garde seulement output
 
 
         x = torch.cat([x, sequence_out], -1)
