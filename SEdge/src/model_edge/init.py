@@ -58,10 +58,7 @@ def make_spectrograms_eigenvalues(N, log_distributed_frequencies= True):
     sigma = sigma.unsqueeze(1)
     omega = omega.unsqueeze(1)
 
-    Lambda = sigma * torch.exp(1j*omega)
-    Lambda = Lambda.to(torch.complex64)
-
-    Lambda = torch.cat((Lambda.real, Lambda.imag), dim=1)
+    Lambda = torch.cat((sigma, omega), dim=1)
     return Lambda
 
 

@@ -70,7 +70,7 @@ class SedgeMask(nn.Module):
         self.hidden_size = hidden_size
         self.use_edge = use_edge
 
-        self.fc0 = Linear(nb_bins, d_out)
+        # self.fc0 = Linear(nb_bins, d_out)
 
         #self.fc1 = Linear(self.nb_bins * nb_channels, hidden_size, bias=False)
         # self.fc1 = Linear(d_out * nb_channels, hidden_size, bias=False)
@@ -84,27 +84,29 @@ class SedgeMask(nn.Module):
             output_size_factors = np.array([1 for _ in range(int(nb_layers))])
         else : output_size_factors = np.array(output_size_factors)
 
-        self.sedge = sedge_sequence(
-            input_size=hidden_size,
-            hidden_sizes = list((hidden_size // hidden_size_factors).astype(int)),
-            output_sizes = list((hidden_size // output_size_factors).astype(int)),
-            dropout=0.4
-        )
+        if self.use_edge:
+            self.sedge = sedge_sequence(
+                input_size=hidden_size,
+                hidden_sizes = list((hidden_size // hidden_size_factors).astype(int)),
+                output_sizes = list((hidden_size // output_size_factors).astype(int)),
+                dropout=0.4
+            )
+        else:    
+            if unidirectional:
+                lstm_hidden_size = hidden_size
+            else:
+                lstm_hidden_size = hidden_size // 2
 
+            self.lstm = LSTM(
+                input_size=hidden_size,
+                hidden_size=lstm_hidden_size,
+                num_layers=nb_layers,
+                bidirectional=not unidirectional,
+                batch_first=False,
+                dropout=0.4 if nb_layers > 1 else 0,
+            )
+            
 
-        if unidirectional:
-            lstm_hidden_size = hidden_size
-        else:
-            lstm_hidden_size = hidden_size // 2
-
-        self.lstm = LSTM(
-            input_size=hidden_size,
-            hidden_size=lstm_hidden_size,
-            num_layers=nb_layers,
-            bidirectional=not unidirectional,
-            batch_first=False,
-            dropout=0.4 if nb_layers > 1 else 0,
-        )
 
         fc2_hiddensize = hidden_size * 2
         self.fc2 = Linear(in_features=fc2_hiddensize, out_features=hidden_size, bias=False)

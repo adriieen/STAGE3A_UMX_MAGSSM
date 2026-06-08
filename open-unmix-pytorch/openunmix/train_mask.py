@@ -25,6 +25,84 @@ from path_config import amp_autocast, amp_grad_scaler
 tqdm.monitor_interval = 0
 
 
+# ---------------------------------------------------------------------------
+# Tracking des valeurs propres Lambda du SSM
+# ---------------------------------------------------------------------------
+
+def collect_lambda_stats(model) -> dict:
+    """
+    Parcourt tous les modules Progressive_SSM du modèle et collecte,
+    pour chaque module, les statistiques du produit Lambda * Delta
+    (exposant de la discrétisation ZOH : Lambda_bar = exp(Lambda * Delta)).
+
+    Re(Lambda * Delta) = taux d'amortissement effectif par pas de temps
+                         → doit rester < 0 pour la stabilité
+    Im(Lambda * Delta) = fréquence d'oscillation en rad/sample
+                         → détermine la sélectivité fréquentielle de l'état
+
+    Retourne un dict JSON-serialisable :
+      {
+        "<module_name>": {
+            "ld_re_mean", "ld_re_min", "ld_re_max",   # Re(Λ·Δ)
+            "ld_im_mean", "ld_im_min", "ld_im_max",   # Im(Λ·Δ)
+            "lbar_mag_mean", "lbar_mag_max",           # |Lambda_bar| = exp(Re(Λ·Δ))
+            "n_unstable",    # nb états avec Re(Λ·Δ) > 0  ↔  |Λbar| > 1
+            "n_near_zero",   # nb états avec Re(Λ·Δ) > -1e-3  (quasi-instables)
+            "n_nan_params",
+        }, ...
+      }
+    """
+    try:
+        from model_edge.ssm_bis import Progressive_SSM
+    except ImportError:
+        return {}
+
+    stats = {}
+    # Si le modèle est wrappé (DDP), accéder au module sous-jacent
+    base = model.module if hasattr(model, 'module') else model
+
+    for name, mod in base.named_modules():
+        if not isinstance(mod, Progressive_SSM):
+            continue
+
+        with torch.no_grad():
+            L = mod.Lambda.detach().float()           # [N, 2]  (re, im bruts)
+            log_step = mod.log_step.detach().float()  # [N]
+            step = (mod.step_scale * torch.exp(log_step))  # Delta  [N]
+
+            # Produit Lambda * Delta — c'est l'exposant physiquement signifiant
+            Lambda_c = torch.complex(L[:, 0], L[:, 1])
+            LD = Lambda_c * step          # Lambda * Delta  [N] complexe
+            ld_re = LD.real               # taux d'amortissement effectif
+            ld_im = LD.imag               # fréquence en rad/sample
+
+            # Lambda_bar = exp(Lambda * Delta)  →  |Lambda_bar| = exp(Re(Λ·Δ))
+            Lambda_bar = torch.exp(LD)
+            mag = Lambda_bar.abs()        # [N]
+
+            n_nan = torch.isnan(L).any().item()
+
+            stats[name] = {
+                # Re(Lambda * Delta) — amortissement effectif
+                "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
+                "ld_re_min":  float(ld_re.min())  if not n_nan else None,
+                "ld_re_max":  float(ld_re.max())  if not n_nan else None,
+                # Im(Lambda * Delta) — fréquence en rad/sample
+                "ld_im_mean": float(ld_im.mean()) if not n_nan else None,
+                "ld_im_min":  float(ld_im.min())  if not n_nan else None,
+                "ld_im_max":  float(ld_im.max())  if not n_nan else None,
+                # |Lambda_bar| = exp(Re(Λ·Δ))
+                "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
+                "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Indicateurs de danger
+                "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
+                "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
+                "n_nan_params": int(torch.isnan(L).sum()),
+            }
+    return stats
+
+
+
 def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
     losses = utils.AverageMeter()
     nan_batches = 0
@@ -447,6 +525,14 @@ def main():
         train_times = []
         best_epoch = 0
 
+    # Historique des valeurs propres — un enregistrement par époque
+    lambda_log_path = Path(target_path, args.target + "_lambda.json")
+    if lambda_log_path.exists():
+        with open(lambda_log_path) as f:
+            lambda_history = json.load(f)  # reprend si checkpoint
+    else:
+        lambda_history = []  # liste de dicts {epoch, stats_par_module}
+
     for epoch in t:
         t.set_description("Training epoch")
         end = time.time()
@@ -491,6 +577,21 @@ def main():
 
         with open(Path(target_path, args.target + ".json"), "w") as outfile:
             outfile.write(json.dumps(params, indent=4, sort_keys=True))
+
+        # --- Enregistrement de la trajectoire des valeurs propres ---
+        lambda_stats = collect_lambda_stats(unmix)
+        lambda_history.append({"epoch": epoch, "lambda": lambda_stats})
+        with open(lambda_log_path, "w") as f:
+            json.dump(lambda_history, f, indent=2)
+
+        # Alerte console si des états deviennent instables
+        for mod_name, s in lambda_stats.items():
+            if s.get("n_nan_params", 0) > 0:
+                print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: NaN dans Lambda ({s['n_nan_params']} params)")
+            elif s.get("n_unstable", 0) > 0:
+                print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: {s['n_unstable']} états instables (|Λbar|>1), re_max={s['re_max']:.3e}")
+            elif s.get("re_max", -1) is not None and s["re_max"] > -1e-3:
+                print(f"[Lambda] ! EPOCH {epoch} — {mod_name}: re_max={s['re_max']:.3e} (proche de 0)")
 
         train_times.append(time.time() - end)
 
