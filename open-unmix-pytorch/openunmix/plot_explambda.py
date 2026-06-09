@@ -24,8 +24,9 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib
+matplotlib.use("Agg")   # backend non-interactif
+import matplotlib.pyplot as plt
 
 # ---------------------------------------------------------------------------
 # Chargement de l'environnement
@@ -129,7 +130,7 @@ def diagnose_lambda(model):
         print(f"    États avec |Re(Lambda)| < 1e-3    : {n_close_zero}/{len(real_parts)}  ← quasi-instables")
 
         # Lambda_bar = exp(Lambda * Delta)
-        Lambda_bar = torch.Lambda_c * step
+        Lambda_bar = Lambda_c * step
         magnitudes = Lambda_bar.abs()
         n_gt1 = (magnitudes > 1.0).sum().item()
         n_near1 = ((magnitudes - 1.0).abs() < 1e-3).sum().item()
@@ -153,27 +154,20 @@ def diagnose_lambda(model):
 # 2b. Distribution des valeurs propres discrétisées (plot PNG)
 # ---------------------------------------------------------------------------
 
-def plot_lambda_distribution(model, save_path="./eigenvalues_trained.html"):
+def plot_lambda_distribution(model, save_path="./eigenvalues_trained.png"):
     """
-    Calcule Λd = Lambda * Delta pour le magssm_encoder et sauvegarde un
-    graphique HTML interactif (zoomable) avec Plotly :
-
-      - Subplot 1 : histogramme de Re(Λd)
-      - Subplot 2 : ECDF de |Im(Λd)| en log-scale  ← adapté à la concentration <1e-5
-      - Subplot 3 : scatter complexe Re(Λd) vs Im(Λd)
-
-    Le fichier .html peut être ouvert dans n'importe quel navigateur.
+    Calcule Lambda_bar = exp(Lambda * Delta) pour le magssm_encoder
+    et sauvegarde un graphique 3x1 avec :
+      - histogramme de Re(Lambda_bar)
+      - histogramme de Im(Lambda_bar)
+      - histogramme de |Lambda_bar|
+    dans save_path.
 
     Chemin des paramètres :
         model.magssm_encoder.mimo.seq.Lambda    [N, 2]  (re, im)
         model.magssm_encoder.mimo.seq.log_step  [N]
         model.magssm_encoder.mimo.seq.step_scale  (scalaire)
     """
-    # Forcer extension .html si l'utilisateur passe .png
-    save_path = str(save_path)
-    if save_path.endswith(".png"):
-        save_path = save_path[:-4] + ".html"
-
     try:
         ssm = model.magssm_encoder.mimo.seq   # Progressive_SSM
     except AttributeError:
@@ -181,141 +175,66 @@ def plot_lambda_distribution(model, save_path="./eigenvalues_trained.html"):
         return
 
     with torch.no_grad():
-        Lambda   = ssm.Lambda.detach().float()           # [N, 2]
-        log_step = ssm.log_step.detach().float()         # [N]
-        step     = ssm.step_scale * torch.exp(log_step)  # Δ  [N]
+        Lambda   = ssm.Lambda.detach().float()      # [N, 2]
+        log_step = ssm.log_step.detach().float()    # [N]
+        step     = ssm.step_scale * torch.exp(log_step)  # Delta  [N]
 
-        Lambda_c = torch.complex(Lambda[:, 0], Lambda[:, 1])  # [N] complexe
-        Ld       = Lambda_c * step                             # Λ·Δ  [N] complexe
+        Lambda_c   = torch.complex(Lambda[:, 0], Lambda[:, 1])  # [N] complexe
+        Lambda_bar = torch.exp(Lambda_c * step)                  # [N] complexe
 
-        re  = Ld.real.numpy()          # Re(Λ·Δ)  — doit être < 0 pour stabilité
-        im  = Ld.imag.numpy()          # Im(Λ·Δ)  — fréquence en rad/sample
+        re  = Lambda_bar.real.numpy()
+        im  = Lambda_bar.imag.numpy()
         mag = np.abs(re + 1j * im)
 
     N = len(re)
+    n_unstable = int((mag > 1.0).sum())
+    n_near1    = int((np.abs(mag - 1.0) < 1e-3).sum())
 
-    # --- Statistiques console ---
-    print(f"\n  Statistiques Λd = Λ·Δ ({N} états) :")
-    print(f"    Re : mean={re.mean():.4e}  std={re.std():.4e}  "
-          f"min={re.min():.4e}  max={re.max():.4e}")
-    print(f"    Im : mean={im.mean():.4e}  std={im.std():.4e}  "
-          f"min={im.min():.4e}  max={im.max():.4e}")
-    print(f"    Re>0 (instables) : {int((re>0).sum())}/{N}")
-    print(f"    |Im|<1e-5        : {int((np.abs(im)<1e-5).sum())}/{N}")
-
-    # -----------------------------------------------------------------------
-    # Construction du graphique Plotly (3 subplots)
-    # -----------------------------------------------------------------------
-    fig = make_subplots(
-        rows=3, cols=1,
-        subplot_titles=(
-            "Re(Λd) — taux d'amortissement (doit être < 0)",
-            "|Im(Λd)| — fréquence en rad/sample  [ECDF, log-scale]",
-            "Scatter complexe : Re(Λd) vs Im(Λd)",
-        ),
-        vertical_spacing=0.10,
+    fig, axes = plt.subplots(2, 1, figsize=(10, 11))
+    fig.suptitle(
+        f"Distribution de $\\Lambda_{{bar}} = \\exp(\\Lambda \\cdot \\Delta)$\n",
+        # f"({N} états SSM  |  instables |Λ̄|>1 : {n_unstable}  |  quasi-stables : {n_near1})",
+        fontsize=12, fontweight="bold"
     )
 
-    # ----- Subplot 1 : Histogramme Re(Λd) -----
-    re_valid = re[np.where(re>-5)]
-    fig.add_trace(
-        go.Histogram(
-            x=re_valid,
-            nbinsx=100,
-            marker_color="#4C72B0",
-            opacity=0.85,
-            name="Re(Λd)",
-            showlegend=False,
-        ),
-        row=1, col=1,
-    )
-    # Ligne verticale Re=0
-    fig.add_vline(x=0,          line_dash="dash", line_color="crimson",
-                  annotation_text="Re=0", row=1, col=1)
-    fig.add_vline(x=re_valid.mean(), line_dash="solid", line_color="orange",
-                  annotation_text=f"mean={re_valid.mean():.3e}", row=1, col=1)
-    fig.update_xaxes(title_text="Re(Λd)", row=1, col=1)
-    fig.update_yaxes(title_text="Nombre d'états", row=1, col=1)
+    # --- Subplot 1 : Re(Lambda_bar) ---
+    ax = axes[0]
+    ax.hist(re, bins=500, color="#4C72B0", edgecolor="none", alpha=0.85)
+    ax.axvline(0,          color="crimson", linewidth=1.2, linestyle="--", label="Re=0")
+    ax.axvline(re.mean(),  color="orange",  linewidth=1.2, linestyle="-",
+               label=f"mean={re.mean():.4f}")
+    ax.set_xlabel(r"$\mathrm{Re}(\Lambda_{\mathrm{bar}})$", fontsize=11)
+    ax.set_ylabel("Nombre d'états", fontsize=10)
+    ax.set_title(r"Partie réelle de $\Lambda_{\mathrm{bar}}$", fontsize=11)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
 
-    # ----- Subplot 2 : ECDF de |Im(Λd)| en log-scale -----
-    # L'ECDF est parfait ici : pas de choix de bins, et le zoom révèle
-    # la structure fine dans la zone de forte concentration (<1e-5).
-    abs_im = np.abs(im[im != 0])          # éviter log(0)
-    abs_im_sorted = np.sort(abs_im)
-    ecdf_y = np.arange(1, len(abs_im_sorted) + 1) / len(abs_im_sorted)
-
-    fig.add_trace(
-        go.Scatter(
-            x=abs_im_sorted,
-            y=ecdf_y,
-            mode="lines",
-            line=dict(color="#55A868", width=2),
-            name="ECDF |Im(Λd)|",
-            showlegend=False,
-            hovertemplate="|Im|=%{x:.3e}<br>F(x)=%{y:.4f}<extra></extra>",
-        ),
-        row=2, col=1,
-    )
-    fig.update_xaxes(title_text="|Im(Λd)|", type="log", row=2, col=1)
-    fig.update_yaxes(title_text="F(x)  [ECDF]", row=2, col=1)
-
-    # Annotation du percentile 50 et 90
-    for pct in [50, 90]:
-        val = np.percentile(abs_im_sorted, pct)
-        fig.add_vline(
-            x=val, line_dash="dot", line_color="orange", opacity=0.7,
-            annotation_text=f"P{pct}={val:.1e}",
-            row=2, col=1,
-        )
-
-    # ----- Subplot 3 : Scatter complexe -----
-    # Couleur = Re(Λd) (plus rouge = plus proche de 0, risque d'instabilité)
-    fig.add_trace(
-        go.Scatter(
-            x=re,
-            y=im,
-            mode="markers",
-            marker=dict(
-                size=3,
-                color=re,
-                colorscale="RdBu_r",     # rouge vers 0, bleu vers -∞
-                colorbar=dict(title="Re(Λd)", thickness=12, x=1.02),
-                showscale=True,
-                opacity=0.6,
-            ),
-            name="états",
-            showlegend=False,
-            hovertemplate="Re=%{x:.3e}<br>Im=%{y:.3e}<extra></extra>",
-        ),
-        row=3, col=1,
-    )
-    fig.add_hline(y=0, line_dash="dash", line_color="crimson", opacity=0.5,
-                  row=3, col=1)
-    fig.add_vline(x=0, line_dash="dash", line_color="crimson", opacity=0.5,
-                  row=3, col=1)
-    fig.update_xaxes(title_text="Re(Λd)", row=3, col=1)
-    fig.update_yaxes(title_text="Im(Λd)", row=3, col=1)
-
-    # -----------------------------------------------------------------------
-    # Mise en page globale
-    # -----------------------------------------------------------------------
-    fig.update_layout(
-        height=1000,
-        title=dict(
-            text=(f"Distribution de Λd = Λ·Δ — {N} états SSM<br>"
-                  f"<sup>Re>0 (instables): {int((re>0).sum())}  |  "
-                  f"|Im|<1e-5: {int((np.abs(im)<1e-5).sum())}</sup>"),
-            font=dict(size=14),
-        ),
-        template="plotly_white",
-        font=dict(family="Arial", size=11),
-    )
-
-    fig.write_html(save_path, include_plotlyjs="cdn")
-    print(f"  ✓ Graphique interactif sauvegardé → {save_path}")
-    print(f"    (ouvrir dans un navigateur pour zoomer)")
+    # --- Subplot 2 : Im(Lambda_bar) ---
+    ax = axes[1]
+    ax.hist(im, bins=300, color="#55A868", edgecolor="none", alpha=0.85)
+    ax.axvline(0,          color="crimson", linewidth=1.2, linestyle="--", label="Im=0")
+    ax.axvline(im.mean(),  color="orange",  linewidth=1.2, linestyle="-",
+               label=f"mean={im.mean():.4f}")
+    ax.set_xlabel(r"$\mathrm{Im}(\Lambda_{\mathrm{bar}})$", fontsize=11)
+    ax.set_ylabel("Nombre d'états", fontsize=10)
+    ax.set_title(r"Partie imaginaire de $\Lambda_{\mathrm{bar}}$", fontsize=11)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
 
 
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\n  ✓ Distribution Lambda_bar sauvegardée → {save_path}")
+    print(f"    Re : mean={re.mean():.4e}  std={re.std():.4e}  min={re.min():.4e}  max={re.max():.4e}")
+    print(f"    Im : mean={im.mean():.4e}  std={im.std():.4e}  min={im.min():.4e}  max={im.max():.4e}")
+
+
+
+# ---------------------------------------------------------------------------
+# 3. Forward pass avec hooks → stats par couche
+# ---------------------------------------------------------------------------
 
 def forward_diagnostic(model, device, nb_bins=2049, nb_channels=2,
                         seq_dur_s=2.0, sample_rate=44100, n_hop=1024):
@@ -519,7 +438,7 @@ def main():
     # diagnose_lambda(unmix)
     plot_lambda_distribution(unmix, save_path="./eigenvalues_trained.png")
 
-    # 3. Forward pass avec hooks
+    # # 3. Forward pass avec hooks
     # layer_stats, problem_indices = forward_diagnostic(
     #     unmix, device,
     #     nb_bins=n_fft // 2 + 1,

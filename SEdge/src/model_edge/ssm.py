@@ -314,8 +314,7 @@ class Progressive_SSM(torch.nn.Module):
                  bias_init='zero',
                  output_bias=False,
                  complex_output=False,
-                 B_C_init='ones',
-                 C_C_init='convolution',
+                 B_C_init='orthogonal',
                  ensure_stability='abs',
                  symmetric=False,
                  chunk_duration = 264600,
@@ -338,16 +337,16 @@ class Progressive_SSM(torch.nn.Module):
         super().__init__()
         self.symmetric = symmetric
 
-        # self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
+        self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
 
-        Lambda = make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies)
+        # Lambda = make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies)
 
         self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
 
         #initializing the lambdas with the structure specified in init.
-        Lambda = Lambda / torch.exp(self.log_step)[:, None]
+        # Lambda = Lambda / torch.exp(self.log_step)[:, None]
 
-        self.Lambda = torch.nn.Parameter(Lambda)
+        # self.Lambda = torch.nn.Parameter(Lambda)
         self.discretize = discretize_zoh
 
         self.input_bias = input_bias
@@ -406,23 +405,11 @@ class Progressive_SSM(torch.nn.Module):
             B_i = torch.zeros(d_state, d_in)
             self.B = torch.nn.Parameter(torch.stack((B_r, B_i), dim=-1))
 
-            if C_C_init == 'convolution':
-                print("C_init_with_convolution")                           
-                # kernel size of 3 on the states of the SSM
-                C_r = torch.eye(d_out, d_state)
-                for i in range(d_out):
-                    for j in range(d_state):
-                        if j==i+1 or j==i-1:
-                            C_r[i,j] = 1
-               
-                C_i = C_r.clone()
-               
-            else : 
-                # orthogonal initialization of the C matrix
-                C_r = torch.empty(d_out, d_state)
-                C_r = torch.nn.init.orthogonal_(C_r.T, gain=gain).T
-                C_i = torch.empty(d_out, d_state)
-                C_i = torch.nn.init.orthogonal_(C_i.T, gain=gain).T
+            # orthogonal initialization of the C matrix
+            C_r = torch.empty(d_out, d_state)
+            C_r = torch.nn.init.orthogonal_(C_r.T, gain=gain).T
+            C_i = torch.empty(d_out, d_state)
+            C_i = torch.nn.init.orthogonal_(C_i.T, gain=gain).T
 
 
             self.C = torch.nn.Parameter(torch.stack((C_r, C_i), dim=-1))

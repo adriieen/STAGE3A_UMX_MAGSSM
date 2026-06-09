@@ -399,8 +399,8 @@ def main():
         scaler_mean = None
         scaler_std = None
     else:
-        scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
-
+        # scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
+        scaler_mean, scaler_std = None, None
     max_bin = None
 
     if args.model: # fine tune model
@@ -433,7 +433,7 @@ def main():
             device = device,
             use_edge = args.use_edge,
             unidirectional = args.unidirectional,
-            progressive = args.progressive,
+            # progressive = args.progressive,
             chunk_duration = chunk_duration_in_frames,
             log_distributed_frequencies= args.mel
             ).to(device)

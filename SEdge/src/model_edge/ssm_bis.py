@@ -562,7 +562,7 @@ class Progressive_SSM(torch.nn.Module):
 
     def forward(self, signal):
 
-        eps_stability = 1e-3
+        eps_stability = 1e-8
 
         with torch.no_grad():
             if self.ensure_stability == 'relu':
