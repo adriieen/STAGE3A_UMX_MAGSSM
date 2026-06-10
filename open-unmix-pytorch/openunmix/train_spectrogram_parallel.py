@@ -19,6 +19,7 @@ import random
 from git import Repo
 import copy
 import torchaudio
+import shutil
 
 
 import data
@@ -31,6 +32,21 @@ from path_config import amp_autocast, amp_grad_scaler
 
 
 tqdm.monitor_interval = 0
+
+import pylab
+
+def save_spectrogram(X, save_path : str):
+    """
+    Saves the spectrogram of a wavefile of format 1=batch, C=2, F, T in a .png file.
+    """
+
+    X = torch.mean(X,dim=1)
+    X = torch.abs(X[0])
+    X = torch.log(X + 1e-8)
+    pylab.imshow(X.detach().cpu().numpy(), aspect='auto', origin='lower')
+    pylab.tight_layout()
+    pylab.savefig(save_path, dpi=300)
+    pylab.close()
 
 
 def print_rank0(*args, **kwargs):
@@ -178,9 +194,10 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
 
 
 def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
-          is_distributed=False, use_amp=False, ds = 1):
+          is_distributed=False, use_amp=False, ds = 1, stft_saving_path=None, magssm_saving_path=None):
     losses = utils.AverageMeter()
     trainable_spectrogram.eval()
+    X, X_hat = None, None
     with torch.no_grad():
         for x, _ in valid_sampler:
             x = x.to(device)
@@ -194,6 +211,11 @@ def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
             if not torch.isfinite(loss):
                 continue  # ignorer les batches de validation avec NaN
             losses.update(loss.item(), X.size(1))
+
+        if stft_saving_path is not None and X is not None:
+            save_spectrogram(X, stft_saving_path)
+        if magssm_saving_path is not None and X_hat is not None:
+            save_spectrogram(X_hat, magssm_saving_path)
 
     if is_distributed:
         loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
@@ -566,6 +588,9 @@ def main():
     # ---------------------------------------------------------------------------
     # Boucle d'entraînement
     # ---------------------------------------------------------------------------
+    stft_saving_path = Path(target_path, args.target + "_stft.png") if global_rank == 0 else None
+    magssm_saving_path = Path(target_path, args.target + "_magssm.png") if global_rank == 0 else None
+
     for epoch in t:
         if is_distributed:
             train_sampler_ddp.set_epoch(epoch)
@@ -579,7 +604,8 @@ def main():
         )
         valid_loss = valid(
             args, trainable_spectrogram, encoder, device, valid_sampler,
-            is_distributed=is_distributed, use_amp=args.amp, ds = args.ds
+            is_distributed=is_distributed, use_amp=args.amp, ds = args.ds,
+            stft_saving_path=stft_saving_path, magssm_saving_path=magssm_saving_path
         )
 
         # Scheduler et early stopping sur tous les rangs (la loss de validation est synchronisée)
@@ -596,6 +622,12 @@ def main():
 
         # Sauvegarde uniquement sur le rank 0
         if global_rank == 0:
+            if valid_loss == es.best:
+                if stft_saving_path is not None and stft_saving_path.exists():
+                    shutil.copyfile(stft_saving_path, Path(target_path, args.target + "_stft_best.png"))
+                if magssm_saving_path is not None and magssm_saving_path.exists():
+                    shutil.copyfile(magssm_saving_path, Path(target_path, args.target + "_magssm_best.png"))
+
             raw_state_dict = (
                 trainable_spectrogram.module.state_dict()
                 if is_distributed
