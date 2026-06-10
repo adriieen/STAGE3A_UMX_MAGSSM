@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.nn import LSTM, BatchNorm1d, Linear, Parameter
 from filtering import wiener
 from transforms import make_filterbanks, ComplexNorm
-from magssm import MagSSM, MagSSM_Encoder
+from magssm import MagSSM_Encoder
 from utils_edge_var import LogNormalizer
 
 from path_config import setup_paths, amp_autocast
@@ -60,23 +60,23 @@ class SedgeMask(nn.Module):
         unidirectional = True,
         chunk_duration : Optional[int] = None,
         log_distributed_frequencies= False,
-        conv_downsample_factor: int = 8,   # facteur de downsampling temporel via Conv2D
+        conv_downsample_factor: int = 1,   # facteur de downsampling temporel via Conv2D
         
     ):
         super(SedgeMask, self).__init__()
 
         self.nb_output_bins = nb_bins
         self.nb_channels = nb_channels
+        self.d_out = d_out
         self.hidden_size = hidden_size
         self.use_edge = use_edge
         self.conv_downsample_factor = conv_downsample_factor
 
         # self.fc0 = Linear(nb_bins, d_out)
 
-        #self.fc1 = Linear(self.nb_bins * nb_channels, hidden_size, bias=False)
-        # self.fc1 = Linear(d_out * nb_channels, hidden_size, bias=False)
-        # self.bn1 = BatchNorm1d(hidden_size)
-
+        self.fc1 = Linear(d_out * nb_channels, hidden_size, bias=False)       
+        self.ln1 = nn.LayerNorm(hidden_size)
+        
         if hidden_size_factors == None : 
             hidden_size_factors = np.array([1 for _ in range(int(nb_layers))]) 
         else : hidden_size_factors = np.array(hidden_size_factors)
@@ -106,7 +106,6 @@ class SedgeMask(nn.Module):
                 batch_first=False,
                 dropout=0.4 if nb_layers > 1 else 0,
             )
-            
 
 
         fc2_hiddensize = hidden_size * 2
@@ -137,9 +136,9 @@ class SedgeMask(nn.Module):
             input_scale = torch.ones(nb_bins)
 
 
-        self.LogNormalizer = LogNormalizer(nb_bins, d_out, 
-                                           linear_neg_mean= input_mean,
-                                           linear_inv_std= input_scale)
+        # self.LogNormalizer = LogNormalizer(nb_bins, d_out, 
+        #                                    linear_neg_mean= input_mean,
+        #                                    linear_inv_std= input_scale)
 
 
         self.output_scale = Parameter(torch.ones(self.nb_output_bins).float())
@@ -164,47 +163,45 @@ class SedgeMask(nn.Module):
         ssm_subsampling = max(1, n_hop // conv_downsample_factor)
 
         self.magssm_encoder = MagSSM_Encoder(
-            d_in = 2,
+            d_in = 1,
             dim_state = dim_state,
-            d_out = hidden_size,
+            d_out = d_out,
             device = device,
             log_distributed_frequencies = log_distributed_frequencies,
             chunk_duration = chunk_duration,
             subsampling_factor = ssm_subsampling
         ).to(device)
-        # Convolutions 2D pour compresser temporellement d'un facteur conv_downsample_factor=8.
-        # 3 couches de stride=2 chacune → facteur total = 2³ = 8
-        # On traite le tenseur comme (B, 1, T_ssm, hidden_size) → Conv2d opère sur (T, H).
-        # Padding = (kernel-1)//2 sur chaque axe → conserve hidden_size intact à stride=1.
-        self.conv_downsample = nn.Sequential(
-            # Couche 1 : (B, 1,  T_ssm,   H) → (B, 8,  T_ssm/2, H)
-            nn.Conv2d(
-                in_channels=1,
-                out_channels=8,
-                kernel_size=(7, 7),
-                stride=(2, 1),        
-                padding=(3, 3),       
-            ),
-            nn.GELU(),
-            # Couche 2 : (B, 8,  T_ssm/2, H) → (B, 16, T_ssm/4, H)
-            nn.Conv2d(
-                in_channels=8,
-                out_channels=16,
-                kernel_size=(5, 5),
-                stride=(2, 1),        
-                padding=(2, 2),       
-            ),
-            nn.GELU(),
-            # Couche 3 : (B, 16, T_ssm/4, H) → (B, 1,  T_stft,  H)
-            nn.Conv2d(
-                in_channels=16,
-                out_channels=1,
-                kernel_size=(3, 3),
-                stride=(2, 1),        
-                padding=(1, 1),      
-            ),
-            nn.GELU(),
-        )
+
+
+        # self.conv_downsample = nn.Sequential(
+        #     # Couche 1 : (B, 1,  T_ssm,   H) → (B, 8,  T_ssm/2, H)
+        #     nn.Conv2d(
+        #         in_channels=1,
+        #         out_channels=8,
+        #         kernel_size=(7, 7),
+        #         stride=(2, 1),        
+        #         padding=(3, 3),       
+        #     ),
+        #     nn.GELU(),
+        #     # Couche 2 : (B, 8,  T_ssm/2, H) → (B, 16, T_ssm/4, H)
+        #     nn.Conv2d(
+        #         in_channels=8,
+        #         out_channels=16,
+        #         kernel_size=(5, 5),
+        #         stride=(2, 1),        
+        #         padding=(2, 2),       
+        #     ),
+        #     nn.GELU(),
+        #     # Couche 3 : (B, 16, T_ssm/4, H) → (B, 1,  T_stft,  H)
+        #     nn.Conv2d(
+        #         in_channels=16,
+        #         out_channels=1,
+        #         kernel_size=(3, 3),
+        #         stride=(2, 1),        
+        #         padding=(1, 1),      
+        #     ),
+        #     nn.GELU(),
+        # )
 
 
     def freeze(self):
@@ -223,44 +220,43 @@ class SedgeMask(nn.Module):
 
 
         _ , _, _, T = X.data.shape
-        # x = self.magssm(x)  
-        # x = torch.abs(x)    # B, 2, (d_out = nb_magssm_states), nb_samples
 
-        # # print("Sortie de magssm = ", x.data.shape) 
-        
-        # x = x.permute(3, 0, 1, 2)
-        # nb_frames, nb_samples, nb_channels, nb_bins = x.data.shape # nb_bins = d_out
-
-        # x = self.LogNormalizer(x)
+        # Audio enters the pipeline with format (B, 2, L)
+        # print("Spectrogram Module input shape : expects (B,2,L)", x.shape)
 
 
-        # x = self.fc1(x.reshape(-1, nb_channels * nb_bins))
-        # x = self.bn1(x)
-        # x = x.reshape(nb_frames, nb_samples, self.hidden_size)
-        # x = torch.tanh(x)
+        x_left, x_right = x[:,0,:], x[:,1,:]
+        x_left, x_right = self.magssm_encoder(x_left), self.magssm_encoder(x_right) #( B, T, d_out ) * 2  
 
 
-        # TEST ---------------------- Let's combine fc1 into the magssm pipeline ---------------------
-
-        nb_samples, nb_channels, seq_dur = x.data.shape
-        # SSM : sous-échantillonne par n_hop // conv_downsample_factor
-        # → sortie (B, T_ssm = conv_downsample_factor * T_stft, hidden_size)
-        
-        x = self.magssm_encoder(x)
+        x = torch.cat((x_left[:,None,...], x_right[:,None, ...]), dim=1) # B, 2, T, d_out
 
         x = torch.abs(x)
 
-        # Convolutions 2D : (B, T_ssm, H) → (B, 1, T_ssm, H) pour Conv2d
-        # puis downsample temporel par conv_downsample_factor → (B, T_stft, H)
-        x = x.unsqueeze(1)                   # (B, 1, T_ssm, H)
-        x = self.conv_downsample(x)          # (B, 1, T_stft, H)
-        x = x.squeeze(1)                     # (B, T_stft, H)
+        # print("Spectrogram Module output shape : expects (B,2,T,d_out)", x.shape)
 
-        nb_samples, nb_frames, _ = x.data.shape
+        x = x.permute(2,0,1,3) # T, B, C, F like UMX.
+
+
+        nb_frames, nb_samples, nb_channels, d_out = x.data.shape
+
+
+        x = self.fc1(x.reshape(-1, nb_channels * self.d_out)) # BxT, H
+        x = x.reshape(nb_frames, nb_samples, self.hidden_size)
+
+        x = self.ln1(x)   
+        x = torch.tanh(x) # comme dans UMX original
+
+        # # Convolutions 2D : (B, T_ssm, H) → (B, 1, T_ssm, H) pour Conv2d
+        # # puis downsample temporel par conv_downsample_factor → (B, T_stft, H)
+        # x = x.unsqueeze(1)                   # (B, 1, T_ssm, H)
+        # x = self.conv_downsample(x)          # (B, 1, T_stft, H)
+        # x = x.squeeze(1)                     # (B, T_stft, H)
 
         # ---------------------------
 
-        
+        # Expected shape (T, B, H)
+        # print("Separation Module input shape : expects (T,B,H)", x.shape)
         if self.use_edge : 
             sequence_out = self.sedge(x)
         
@@ -287,7 +283,7 @@ class SedgeMask(nn.Module):
         x *= self.output_scale
         x += self.output_mean
 
-        x = x.permute(1, 2, 3, 0)
+        x = x.permute(1, 2, 3, 0) # B, C, F, T
         x = x[..., :T]
 
         # print("dim du mask = ", x.data.shape)

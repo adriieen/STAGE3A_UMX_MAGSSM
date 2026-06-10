@@ -25,7 +25,7 @@ import data
 import model
 import utils
 import transforms
-import sedge_mask
+from spectrogram import Trainable_spectrogram
 import utils_edge_var
 from path_config import amp_autocast, amp_grad_scaler
 
@@ -41,28 +41,105 @@ def print_rank0(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed=False, scaler=None):
+# ---------------------------------------------------------------------------
+# Tracking des valeurs propres Lambda du SSM
+# ---------------------------------------------------------------------------
+
+def collect_lambda_stats(model) -> dict:
+    """
+    Parcourt tous les modules Progressive_SSM du modèle et collecte,
+    pour chaque module, les statistiques du produit Lambda * Delta
+    (exposant de la discrétisation ZOH : Lambda_bar = exp(Lambda * Delta)).
+
+    Re(Lambda * Delta) = taux d'amortissement effectif par pas de temps
+                         → doit rester < 0 pour la stabilité
+    Im(Lambda * Delta) = fréquence d'oscillation en rad/sample
+                         → détermine la sélectivité fréquentielle de l'état
+
+    Retourne un dict JSON-serialisable :
+      {
+        "<module_name>": {
+            "ld_re_mean", "ld_re_min", "ld_re_max",   # Re(Λ·Δ)
+            "ld_im_mean", "ld_im_min", "ld_im_max",   # Im(Λ·Δ)
+            "lbar_mag_mean", "lbar_mag_max",           # |Lambda_bar| = exp(Re(Λ·Δ))
+            "n_unstable",    # nb états avec Re(Λ·Δ) > 0  ↔  |Λbar| > 1
+            "n_near_zero",   # nb états avec Re(Λ·Δ) > -1e-3  (quasi-instables)
+            "n_nan_params",
+        }, ...
+      }
+    """
+    try:
+        from model_edge.ssm_bis import Progressive_SSM
+    except ImportError:
+        return {}
+
+    stats = {}
+    # Si le modèle est wrappé (DDP), accéder au module sous-jacent
+    base = model.module if hasattr(model, 'module') else model
+
+    for name, mod in base.named_modules():
+        if not isinstance(mod, Progressive_SSM):
+            continue
+
+        with torch.no_grad():
+            L = mod.Lambda.detach().float()           # [N, 2]  (re, im bruts)
+            log_step = mod.log_step.detach().float()  # [N]
+            step = (mod.step_scale * torch.exp(log_step))  # Delta  [N]
+
+            # Produit Lambda * Delta — c'est l'exposant physiquement signifiant
+            Lambda_c = torch.complex(L[:, 0], L[:, 1])
+            LD = Lambda_c * step          # Lambda * Delta  [N] complexe
+            ld_re = LD.real               # taux d'amortissement effectif
+            ld_im = LD.imag               # fréquence en rad/sample
+
+            # Lambda_bar = exp(Lambda * Delta)  →  |Lambda_bar| = exp(Re(Λ·Δ))
+            Lambda_bar = torch.exp(LD)
+            mag = Lambda_bar.abs()        # [N]
+
+            n_nan = torch.isnan(L).any().item()
+
+            stats[name] = {
+                # Re(Lambda * Delta) — amortissement effectif
+                "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
+                "ld_re_min":  float(ld_re.min())  if not n_nan else None,
+                "ld_re_max":  float(ld_re.max())  if not n_nan else None,
+                # Im(Lambda * Delta) — fréquence en rad/sample
+                "ld_im_mean": float(ld_im.mean()) if not n_nan else None,
+                "ld_im_min":  float(ld_im.min())  if not n_nan else None,
+                "ld_im_max":  float(ld_im.max())  if not n_nan else None,
+                # |Lambda_bar| = exp(Re(Λ·Δ))
+                "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
+                "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Indicateurs de danger
+                "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
+                "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
+                "n_nan_params": int(torch.isnan(L).sum()),
+            }
+    return stats
+
+
+def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer,
+          is_distributed=False, scaler=None, ds =1):
     losses = utils.AverageMeter()
     nan_batches = 0
-    unmix.train()
+    trainable_spectrogram.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
-    for x, y in pbar:
-        pbar.set_description("Training batch")
-        x, y = x.to(device), y.to(device)
+    for x, _ in pbar:
+        pbar.set_description("Training batch") # B,2,L
+        x = x.to(device)
         optimizer.zero_grad()
+        x = x[:,:,::ds]
 
         use_amp = (scaler is not None) and (device.type == "cuda")
-        
-        # Precompute STFTs completely outside of autocast and DDP
+
+        # Precompute STFT completely outside of autocast and DDP
         with amp_autocast(enabled=False):
             X = encoder(x.float())
-            Y = encoder(y.float())
 
         with amp_autocast(enabled=use_amp):
-            Y_hat = unmix(x, X=X)
-            loss = torch.nn.functional.mse_loss(Y_hat, Y)
+            X_hat = trainable_spectrogram(x)
+            loss = torch.nn.functional.mse_loss(X_hat, X)
 
-        # Detecter un NaN/Inf avant le backward pour eviter de corrompre les poids
         if not torch.isfinite(loss):
             nan_batches += 1
             if not args.quiet:
@@ -73,23 +150,22 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
         if use_amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(trainable_spectrogram.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(trainable_spectrogram.parameters(), max_norm=1.0)
             optimizer.step()
 
-        losses.update(loss.item(), Y.size(1))
+        losses.update(loss.item(), X.size(1))
         pbar.set_postfix(loss="{:.3f}".format(losses.avg))
 
     if nan_batches > 0:
         print_rank0(f"[WARN] {nan_batches} batch(s) ignores (NaN/Inf) durant cette epoque.")
 
-    # Proteger contre un AverageMeter vide (tous les batches etaient NaN)
+    # Agréger correctement en ignorant les rangs sans batches valides
     if is_distributed:
-        # Aggreger correctement en ignorant les rangs sans batches valides
         loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
         count_sum = torch.tensor(float(losses.count), device=device)
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
@@ -101,21 +177,23 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
         return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False, use_amp=False):
+def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
+          is_distributed=False, use_amp=False, ds = 1):
     losses = utils.AverageMeter()
-    unmix.eval()
+    trainable_spectrogram.eval()
     with torch.no_grad():
-        for x, y in valid_sampler:
-            x, y = x.to(device), y.to(device)
+        for x, _ in valid_sampler:
+            x = x.to(device)
+            x = x[:,:,::ds]
 
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
-                Y_hat = unmix(x)
-                Y = encoder(y)
-                loss = torch.nn.functional.mse_loss(Y_hat, Y)
+                X_hat = trainable_spectrogram(x)
+                X = encoder(x)
+                loss = torch.nn.functional.mse_loss(X_hat, X)
 
             if not torch.isfinite(loss):
                 continue  # ignorer les batches de validation avec NaN
-            losses.update(loss.item(), Y.size(1))
+            losses.update(loss.item(), X.size(1))
 
     if is_distributed:
         loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
@@ -129,46 +207,18 @@ def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False, use
         return losses.avg if losses.count > 0 else float('nan')
 
 
-def get_statistics(args, encoder, dataset):
-    encoder = copy.deepcopy(encoder).to("cpu")
-    scaler = sklearn.preprocessing.StandardScaler()
-
-    dataset_scaler = copy.deepcopy(dataset)
-    if isinstance(dataset_scaler, data.SourceFolderDataset):
-        dataset_scaler.random_chunks = False
-    else:
-        dataset_scaler.random_chunks = False
-        dataset_scaler.seq_duration = None
-
-    dataset_scaler.samples_per_track = 1
-    dataset_scaler.augmentations = None
-    dataset_scaler.random_track_mix = False
-    dataset_scaler.random_interferer_mix = False
-
-    pbar = tqdm.tqdm(range(len(dataset_scaler)), disable=args.quiet)
-    for ind in pbar:
-        x, y = dataset_scaler[ind]
-        pbar.set_description("Compute dataset statistics")
-        # downmix to mono channel
-        X = encoder(x[None, ...]).mean(1, keepdim=False).permute(0, 2, 1)
-
-        scaler.partial_fit(np.squeeze(X))
-
-    # set inital input scaler values
-    std = np.maximum(scaler.scale_, 1e-4 * np.max(scaler.scale_)) # type: ignore
-
-    return scaler.mean_, std
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Open Unmix Distributed Trainer")
+    parser = argparse.ArgumentParser(description="Open trainable_spectrogram Distributed Trainer")
 
     # which target do we want to train?
     parser.add_argument("--target", type=str, default="vocals",
         help="target source (will be passed to the dataset)",
     )
 
-    # Dataset paramaters
+    # Dataset parameters
+
+    parser.add_argument("--ds", type = int, default = 1, help="downsampling factor for the input data")
+
     parser.add_argument(
         "--dataset",
         type=str,
@@ -185,7 +235,7 @@ def main():
     parser.add_argument("--root", type=str, help="root path of dataset")
     parser.add_argument("--output",
         type=str,
-        default="open-unmix",
+        default="open-trainable_spectrogram",
         help="provide output path base folder name",
     )
     parser.add_argument("--model", type=str, help="Name or path of pretrained model to fine-tune")
@@ -196,6 +246,8 @@ def main():
         help="Set torchaudio backend (`sox_io` or `soundfile`",
     )
 
+
+
     # Training Parameters
     parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -205,12 +257,12 @@ def main():
         default=140,
         help="maximum number of train epochs (default: 140)",
     )
-    parser.add_argument( "--lr-decay-patience",
+    parser.add_argument("--lr-decay-patience",
         type=int,
         default=80,
         help="lr decay patience for plateau scheduler",
     )
-    parser.add_argument( "--lr-decay-gamma",
+    parser.add_argument("--lr-decay-gamma",
         type=float,
         default=0.3,
         help="gamma of learning rate scheduler decay",
@@ -219,91 +271,63 @@ def main():
     parser.add_argument("--seed", type=int, default=42, metavar="S", help="random seed (default: 42)")
 
     # Model Parameters
-
-    parser.add_argument("--use_edge", 
-        action="store_true",
-        default = False,
-        help = "Uses 'nb_layers' S-edge Layers for the main sequence to sequence" \
-        "mapping from the separation module : otherwise, basic LSTM will be used."
-    )
-
     parser.add_argument("--seq-dur",
         type=float,
         default=6.0,
-        help="Sequence duration in seconds" "value of <=0.0 will use full/variable length",
+        help="Sequence duration in seconds — value of <=0.0 will use full/variable length",
     )
-    parser.add_argument("--unidirectional",
-        action="store_true",
-        default=False,
-        help="Use unidirectional LSTM",
-    )
+
     parser.add_argument("--nfft", type=int, default=4096, help="(STFT) fft size and window size")
     parser.add_argument("--nhop", type=int, default=1024, help="(STFT) hop size")
 
-    parser.add_argument("--nb_magssm_states", type=int, default = 129, help= "Number of states in MAGSSM ")
+    parser.add_argument("--nb_magssm_states", type=int, default=129, help="Number of states in MAGSSM")
 
-    parser.add_argument("--d_out", type=int, default = None, 
-                        help = "Number of frequencies in the trainable spectrogram." \
-                        "Standard choice is to set it equal to the number of states, but it can be higher... ")
-    
-    parser.add_argument("--chunk-dur", type=float, default = 6.0, # equiv to not progressive
-                        help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \
-                        "The input sequence will be split into chunks for computation by the SSM module")
+    parser.add_argument("--d_out", type=int, default=None,
+                        help="Number of frequencies in the trainable spectrogram. "
+                             "Standard choice is to set it equal to the number of states.")
 
-    parser.add_argument("--mel", action="store_true", default = False,
-                        help = "If put as an argument, will initialize the argument of the eigenvalues of the A-matrix " \
-                        "according to a log scale to enhance resolution in the lower frequency domain")
+    parser.add_argument("--chunk-dur", type=float, default=6.0,
+                        help="chunk duration in seconds. The input sequence will be split "
+                             "into chunks for computation by the SSM module.")
 
-    parser.add_argument("--hidden-size",
-        type=int,
-        default=512,
-        help="hidden size parameter of bottleneck layers",
-    )
-    parser.add_argument("--bandwidth", 
-                        type=int, default=16000, help="maximum model bandwidth in herz"
-    )
+    parser.add_argument("--mel", action="store_true", default=False,
+                        help="If set, will initialize eigenvalue arguments of the A-matrix "
+                             "on a log scale to enhance resolution in the lower frequency domain.")
+
+    parser.add_argument("--bandwidth",
+                        type=int, default=16000, help="maximum model bandwidth in herz")
     parser.add_argument("--nb-channels",
         type=int,
         default=2,
         help="set number of channels for model (1, 2)",
     )
-    parser.add_argument("--nb-workers", 
-                        type=int, default=0, help="Number of workers for dataloader."
-    )
+    parser.add_argument("--nb-workers",
+                        type=int, default=0, help="Number of workers for dataloader.")
     parser.add_argument("--debug",
         action="store_true",
         default=False,
         help="Speed up training init for dev purposes",
     )
 
-    parser.add_argument("--hidden_size_factors", type = int, nargs = "+", default=None
-        , help = "Give nb_layer factors. Hidden size in SEdge Layers will see their size reduced by the " \
-        "factors the user precise in this field: ex for a desired decrease of 1;1/2;1/4" \
-        "the user should write --hidden_....._factors 1 2 4 in the terminal")
-    
-    parser.add_argument("--output_size_factors", type = int, nargs = "+", default=None
-        , help="Same thing that for the hidden size reduction but for the increase of the output size" \
-        "in the output size of the SEdge layers. Note that last layer factor must be 1" \
-        "ex for a desired increase in output size of 1/4 ; 1/2 ; 1 the user should write --output....._factors 4 2 1 in the terminal "\
-        "A standard choice is to set output_sizes = hidden_sizes[::-1] to have a reasonable nb of parameters")
+    parser.add_argument("--hidden_size_factors", type=int, nargs="+", default=None,
+        help="Hidden size reduction factors for SEdge layers.")
 
-    parser.add_argument("--nb_layers", type=int, default=3, help="Number of internal layers in the separation module")
+    parser.add_argument("--output_size_factors", type=int, nargs="+", default=None,
+        help="Output size increase factors for SEdge layers.")
 
     # Distributed Training Parameters
     parser.add_argument("--backend", type=str, default="nccl", choices=["nccl", "gloo"],
                         help="Distributed backend to use (default: nccl)")
 
     # Multi-node Parameters (pour torchrun --nnodes > 1)
-    # Ces valeurs sont normalement passees via les variables d'environnement
+    # Ces valeurs sont normalement passées via les variables d'environnement
     # MASTER_ADDR et MASTER_PORT par torchrun, mais on les expose aussi en arguments.
     parser.add_argument("--master-addr", type=str, default=None,
                         help="Adresse IP ou hostname du noeud master (rank 0). "
-                             "Surcharge la variable d'environnement MASTER_ADDR."
-    )
+                             "Surcharge la variable d'environnement MASTER_ADDR.")
     parser.add_argument("--master-port", type=str, default="29500",
-                        help="Port TCP du noeud master (defaut: 29500). "
-                             "Surcharge la variable d'environnement MASTER_PORT."
-    )
+                        help="Port TCP du noeud master (défaut: 29500). "
+                             "Surcharge la variable d'environnement MASTER_PORT.")
 
     # Misc Parameters
     parser.add_argument("--quiet",
@@ -311,17 +335,17 @@ def main():
         default=False,
         help="less verbose during training",
     )
-    parser.add_argument("--no-cuda", 
-                        action="store_true", default=False, help="disables CUDA training"
-    )
+    parser.add_argument("--no-cuda",
+                        action="store_true", default=False, help="disables CUDA training")
     parser.add_argument("--amp",
                         action="store_true", default=False,
-                        help="Use automatic mixed precision (AMP) during training"
-    )
+                        help="Use automatic mixed precision (AMP) during training")
 
     args, _ = parser.parse_known_args()
 
-    # Initialize distributed process group if running under torchrun
+    # ---------------------------------------------------------------------------
+    # Initialisation du groupe de processus distribué (si lancé via torchrun)
+    # ---------------------------------------------------------------------------
     is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
     if is_distributed:
         # Permettre de surcharger MASTER_ADDR/MASTER_PORT via arguments CLI
@@ -330,23 +354,24 @@ def main():
             os.environ["MASTER_ADDR"] = args.master_addr
         if "MASTER_ADDR" not in os.environ:
             raise RuntimeError(
-                "MASTER_ADDR non defini. Utilisez --master-addr ou la variable d'environnement MASTER_ADDR."
+                "MASTER_ADDR non défini. Utilisez --master-addr ou la variable d'environnement MASTER_ADDR."
             )
         os.environ.setdefault("MASTER_PORT", args.master_port)
 
         global_rank = int(os.environ["RANK"])
-        local_rank = int(os.environ["LOCAL_RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        # Set device before any CUDA call is made to avoid CUFFT / CUDA context errors
+        local_rank  = int(os.environ["LOCAL_RANK"])
+        world_size  = int(os.environ["WORLD_SIZE"])
+        # set_device est déjà fait en top-of-file, mais on le répète ici pour
+        # sécuriser le cas où le script serait appelé sans la garde top-of-file.
         torch.cuda.set_device(local_rank)
         dist.init_process_group(backend=args.backend, init_method="env://")
         device = torch.device(f"cuda:{local_rank}")
     else:
         global_rank = 0
-        local_rank = 0
-        world_size = 1
+        local_rank  = 0
+        world_size  = 1
 
-    # Silent other ranks
+    # Silence les rangs non-0 (tqdm, prints, etc.)
     args.quiet = args.quiet or (global_rank != 0)
 
     torchaudio.set_audio_backend(args.audio_backend)
@@ -364,11 +389,16 @@ def main():
     except Exception:
         commit = "unknown"
 
-    # Seed
+    # Seed (chaque rang a le même seed — le DistributedSampler gère le shuffle par rang)
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    # ---------------------------------------------------------------------------
+    # Chargement du dataset
+    # Rang 0 en premier, puis barrier, puis les autres rangs.
+    # Évite les race conditions si le dataset crée des fichiers cache.
+    # ---------------------------------------------------------------------------
     if is_distributed:
         if global_rank == 0:
             train_dataset, valid_dataset, args = data.load_datasets(parser, args)
@@ -379,12 +409,14 @@ def main():
         train_dataset, valid_dataset, args = data.load_datasets(parser, args)
     args.sample_rate = train_dataset.sample_rate
 
-    # create output dir if not exist
+    # Création du répertoire de sortie (rank 0 uniquement)
     target_path = Path(args.output)
     if global_rank == 0:
         target_path.mkdir(parents=True, exist_ok=True)
 
-    # Set up Distributed Samplers
+    # ---------------------------------------------------------------------------
+    # DataLoaders avec DistributedSampler si DDP
+    # ---------------------------------------------------------------------------
     if is_distributed:
         train_sampler_ddp = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
@@ -392,13 +424,13 @@ def main():
             rank=global_rank,
             shuffle=True,
             seed=args.seed,
-            drop_last=True
+            drop_last=True,
         )
         valid_sampler_ddp = torch.utils.data.distributed.DistributedSampler(
             valid_dataset,
             num_replicas=world_size,
             rank=global_rank,
-            shuffle=False
+            shuffle=False,
         )
         train_sampler = torch.utils.data.DataLoader(
             train_dataset, batch_size=args.batch_size, sampler=train_sampler_ddp, **dataloader_kwargs
@@ -411,9 +443,7 @@ def main():
         train_sampler = torch.utils.data.DataLoader(
             train_dataset, batch_size=args.batch_size, shuffle=True, **dataloader_kwargs
         )
-        valid_sampler = torch.utils.data.DataLoader(
-            valid_dataset, batch_size=1, **dataloader_kwargs
-        )
+        valid_sampler = torch.utils.data.DataLoader(valid_dataset, batch_size=1, **dataloader_kwargs)
 
     stft, _ = transforms.make_filterbanks(
         n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate
@@ -421,7 +451,7 @@ def main():
 
     encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
 
-    # Freeze encoder
+    # Freeze encoder (STFT classique — pas de paramètres à entraîner)
     encoder.eval()
     for p in encoder.parameters():
         p.requires_grad = False
@@ -431,59 +461,44 @@ def main():
         "nhop": args.nhop,
         "sample_rate": train_dataset.sample_rate,
         "nb_channels": args.nb_channels,
-        "nb_magssm_states": args.nb_magssm_states
+        "nb_magssm_states": args.nb_magssm_states,
     }
 
     if global_rank == 0:
         with open(Path(target_path, "separator.json"), "w") as outfile:
             outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
-    scaler_mean, scaler_std = None, None
-
-    if args.model: # fine tune model
+    # ---------------------------------------------------------------------------
+    # Construction du modèle
+    # ---------------------------------------------------------------------------
+    if args.model:  # fine-tune depuis un modèle existant
         print_rank0(f"Fine-tuning model from {args.model}")
-        unmix = utils_edge_var.load_target_models(
+        trainable_spectrogram = utils_edge_var.load_target_models(
             args.target, model_str_or_path=args.model, device=device, pretrained=True, magssm=True
         )[args.target]
-        unmix = unmix.to(device)
-        # Réinitialiser les running stats du BatchNorm héritées du modèle source
-        # (évite les NaN en validation quand la taille du modèle a changé)
-        _nb_bn_reset = 0
-        for m in unmix.modules():
-            if isinstance(m, torch.nn.BatchNorm1d):
-                m.reset_running_stats()
-                _nb_bn_reset += 1
-        print_rank0(f"[INFO] Running stats réinitialisées pour {_nb_bn_reset} couche(s) BatchNorm1d")
+        trainable_spectrogram = trainable_spectrogram.to(device)
 
     else:
         chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate)
         d_out = args.nb_magssm_states if args.d_out is None else args.d_out
 
-        unmix = sedge_mask.SedgeMask(
-            input_mean=scaler_mean,
-            input_scale=scaler_std,
+        trainable_spectrogram = Trainable_spectrogram(
             nb_bins=args.nfft // 2 + 1,
             nb_channels=args.nb_channels,
-            hidden_size=args.hidden_size,
-            nb_layers=args.nb_layers,
-            hidden_size_factors=args.hidden_size_factors,
-            output_size_factors=args.output_size_factors,
-            n_fft=args.nfft,
             n_hop=args.nhop,
             dim_state=args.nb_magssm_states,
-            d_out=d_out,
             encoder=encoder,
             device=device,
-            use_edge=args.use_edge,
-            unidirectional=args.unidirectional,
             chunk_duration=chunk_duration_in_frames,
-            log_distributed_frequencies=args.mel
+            log_distributed_frequencies=args.mel,
         ).to(device)
 
-        total_params = sum(p.numel() for p in unmix.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in trainable_spectrogram.parameters() if p.requires_grad)
         print_rank0(f"Total number of parameters: {total_params}")
 
-    optimizer = torch.optim.AdamW(unmix.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        trainable_spectrogram.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -494,10 +509,12 @@ def main():
 
     es = utils.EarlyStopping(patience=args.patience)
 
-    # Gradient scaler pour AMP (no-op si AMP desactive)
+    # Gradient scaler pour AMP (no-op si AMP désactivé)
     amp_scaler = amp_grad_scaler(enabled=args.amp and use_cuda)
 
-    # Resume training if checkpoint specified
+    # ---------------------------------------------------------------------------
+    # Reprise depuis checkpoint (AVANT le wrap DDP)
+    # ---------------------------------------------------------------------------
     if args.checkpoint:
         model_path = Path(args.checkpoint).expanduser()
         with open(Path(model_path, args.target + ".json"), "r") as stream:
@@ -505,10 +522,10 @@ def main():
 
         target_model_path = Path(model_path, args.target + ".chkpnt")
         checkpoint = torch.load(target_model_path, map_location=device)
-        unmix.load_state_dict(checkpoint["state_dict"], strict=False)
+        trainable_spectrogram.load_state_dict(checkpoint["state_dict"], strict=False)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        
+
         t = tqdm.trange(
             results["epochs_trained"],
             results["epochs_trained"] + args.epochs + 1,
@@ -516,36 +533,56 @@ def main():
         )
         train_losses = results["train_loss_history"]
         valid_losses = results["valid_loss_history"]
-        train_times = results["train_time_history"]
-        best_epoch = results["best_epoch"]
-        es.best = results["best_loss"]
+        train_times  = results["train_time_history"]
+        best_epoch   = results["best_epoch"]
+        es.best          = results["best_loss"]
         es.num_bad_epochs = results["num_bad_epochs"]
     else:
         t = tqdm.trange(1, args.epochs + 1, disable=args.quiet)
         train_losses = []
         valid_losses = []
-        train_times = []
-        best_epoch = 0
+        train_times  = []
+        best_epoch   = 0
 
-    # Wrap model with DistributedDataParallel after potentially loading checkpoint
+    # ---------------------------------------------------------------------------
+    # Wrap DDP (après chargement du checkpoint pour éviter les conflits de clés)
+    # ---------------------------------------------------------------------------
     if is_distributed:
-        unmix = torch.nn.parallel.DistributedDataParallel(
-            unmix,
+        trainable_spectrogram = torch.nn.parallel.DistributedDataParallel(
+            trainable_spectrogram,
             device_ids=[local_rank],
             output_device=local_rank,
-            find_unused_parameters=True
+            find_unused_parameters=True,
         )
 
+    # Historique des valeurs propres — un enregistrement par époque
+    lambda_log_path = Path(target_path, args.target + "_lambda.json")
+    if lambda_log_path.exists():
+        with open(lambda_log_path) as f:
+            lambda_history = json.load(f)  # reprend si checkpoint
+    else:
+        lambda_history = []  # liste de dicts {epoch, stats_par_module}
+
+    # ---------------------------------------------------------------------------
+    # Boucle d'entraînement
+    # ---------------------------------------------------------------------------
     for epoch in t:
         if is_distributed:
             train_sampler_ddp.set_epoch(epoch)
+
         t.set_description("Training epoch")
         end = time.time()
-        
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed, scaler=amp_scaler)
-        valid_loss = valid(args, unmix, encoder, device, valid_sampler, is_distributed, use_amp=args.amp)
-        
-        # Scheduler and early stopping run on all ranks since validation loss is synced
+
+        train_loss = train(
+            args, trainable_spectrogram, encoder, device, train_sampler, optimizer,
+            is_distributed=is_distributed, scaler=amp_scaler, ds = args.ds
+        )
+        valid_loss = valid(
+            args, trainable_spectrogram, encoder, device, valid_sampler,
+            is_distributed=is_distributed, use_amp=args.amp, ds = args.ds
+        )
+
+        # Scheduler et early stopping sur tous les rangs (la loss de validation est synchronisée)
         scheduler.step(valid_loss)
         train_losses.append(train_loss)
         valid_losses.append(valid_loss)
@@ -557,9 +594,13 @@ def main():
         if valid_loss == es.best:
             best_epoch = epoch
 
-        # Save checkpoint only on global rank 0
+        # Sauvegarde uniquement sur le rank 0
         if global_rank == 0:
-            raw_state_dict = unmix.module.state_dict() if is_distributed else unmix.state_dict()
+            raw_state_dict = (
+                trainable_spectrogram.module.state_dict()
+                if is_distributed
+                else trainable_spectrogram.state_dict()
+            )
             utils.save_checkpoint(
                 {
                     "epoch": epoch + 1,
@@ -573,7 +614,7 @@ def main():
                 target=args.target,
             )
 
-            # save params
+            # Sauvegarde du JSON de métriques
             params = {
                 "epochs_trained": epoch,
                 "args": vars(args),
@@ -588,6 +629,29 @@ def main():
 
             with open(Path(target_path, args.target + ".json"), "w") as outfile:
                 outfile.write(json.dumps(params, indent=4, sort_keys=True))
+
+            # --- Enregistrement de la trajectoire des valeurs propres ---
+            # On accède au module sous-jacent si DDP
+            raw_model = (
+                trainable_spectrogram.module
+                if is_distributed
+                else trainable_spectrogram
+            )
+            lambda_stats = collect_lambda_stats(raw_model)
+            lambda_history.append({"epoch": epoch, "lambda": lambda_stats})
+            with open(lambda_log_path, "w") as f:
+                json.dump(lambda_history, f, indent=2)
+
+            # Alerte console si des états deviennent instables
+            for mod_name, s in lambda_stats.items():
+                if s.get("n_nan_params", 0) > 0:
+                    print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: NaN dans Lambda ({s['n_nan_params']} params)")
+                elif s.get("n_unstable", 0) > 0:
+                    print(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: {s['n_unstable']} états instables "
+                          f"(Re(Λ·Δ)>0), ld_re_max={s['ld_re_max']:.3e}")
+                elif s.get("ld_re_max") is not None and s["ld_re_max"] > -1e-3:
+                    print(f"[Lambda] ! EPOCH {epoch} — {mod_name}: ld_re_max={s['ld_re_max']:.3e} "
+                          f"(Re(Λ·Δ) proche de 0)")
 
         train_times.append(time.time() - end)
 

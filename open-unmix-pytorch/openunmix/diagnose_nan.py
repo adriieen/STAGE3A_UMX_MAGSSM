@@ -217,7 +217,8 @@ def plot_lambda_distribution(model, save_path="./eigenvalues_trained.html"):
     )
 
     # ----- Subplot 1 : Histogramme Re(Λd) -----
-    re_valid = re[np.where(re>-5)]
+    re_valid = re
+    print(re_valid)
     fig.add_trace(
         go.Histogram(
             x=re_valid,
@@ -234,6 +235,8 @@ def plot_lambda_distribution(model, save_path="./eigenvalues_trained.html"):
                   annotation_text="Re=0", row=1, col=1)
     fig.add_vline(x=re_valid.mean(), line_dash="solid", line_color="orange",
                   annotation_text=f"mean={re_valid.mean():.3e}", row=1, col=1)
+    fig.add_vline(x=np.median(re_valid),line_dash="solid", line_color="green",
+                  annotation_text=f"med={np.median(re_valid):.3e}", row=1, col=1)
     fig.update_xaxes(title_text="Re(Λd)", row=1, col=1)
     fig.update_yaxes(title_text="Nombre d'états", row=1, col=1)
 
@@ -497,7 +500,7 @@ def main():
         hidden_size=hidden_size,
         nb_layers=nb_layers,
         dim_state=dim_state,
-        d_out=dim_state,          # ← manquait : sans ça, default=129 → mismatch
+        d_out=dim_state,          
         n_fft=n_fft,
         n_hop=n_hop,
         device=device,

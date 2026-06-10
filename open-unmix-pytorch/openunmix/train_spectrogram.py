@@ -18,6 +18,7 @@ import model
 import utils
 import transforms
 import sedge_mask
+from spectrogram import Trainable_spectrogram
 import utils_edge_var
 from path_config import amp_autocast, amp_grad_scaler
 
@@ -103,21 +104,22 @@ def collect_lambda_stats(model) -> dict:
 
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
+def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=None, ds = 1):
     losses = utils.AverageMeter()
     nan_batches = 0
-    unmix.train()
+    trainable_spectrogram.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
-    for x, y in pbar:
+    for x, _ in pbar:   # (B, 2, L)
         pbar.set_description("Training batch")
-        x, y = x.to(device), y.to(device)
+        x = x.to(device)
         optimizer.zero_grad()
+        x = x[:, : , ::ds]
 
         use_amp = (scaler is not None) and (device.type == "cuda")
         with amp_autocast(enabled=use_amp):
-            Y_hat = unmix(x) # x is the waveform -- Mixture audio signal 
-            Y = encoder(y)
-            loss = torch.nn.functional.mse_loss(Y_hat, Y)
+            X_hat = trainable_spectrogram(x) # x is the waveform -- Mixture audio signal 
+            X = encoder(x)
+            loss = torch.nn.functional.mse_loss(X_hat, X)
 
         if not torch.isfinite(loss):
             nan_batches += 1
@@ -128,15 +130,15 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
         if use_amp:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(trainable_spectrogram.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(unmix.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(trainable_spectrogram.parameters(), max_norm=1.0)
             optimizer.step()
 
-        losses.update(loss.item(), Y.size(1))
+        losses.update(loss.item(), X.size(1))
         pbar.set_postfix(loss="{:.3f}".format(losses.avg))
 
     if nan_batches > 0:
@@ -144,57 +146,28 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, scaler=None):
     return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, unmix, encoder, device, valid_sampler, use_amp=False):
+def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, ds=1):
     losses = utils.AverageMeter()
-    unmix.eval()
+    trainable_spectrogram.eval()
     with torch.no_grad():
-        for x, y in valid_sampler:
-            x, y = x.to(device), y.to(device)
+        for x, _ in valid_sampler:
+            x = x.to(device)
+            x = x[:, : , ::ds]
 
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
-                Y_hat = unmix(x)
-                Y = encoder(y)
-                loss = torch.nn.functional.mse_loss(Y_hat, Y)
+                X_hat = trainable_spectrogram(x)
+                X = encoder(x)
+                loss = torch.nn.functional.mse_loss(X_hat, X)
 
             if not torch.isfinite(loss):
                 continue
-            losses.update(loss.item(), Y.size(1))
+            losses.update(loss.item(), X.size(1))
         return losses.avg if losses.count > 0 else float('nan')
 
 
-def get_statistics(args, encoder, dataset):
-    encoder = copy.deepcopy(encoder).to("cpu")
-    scaler = sklearn.preprocessing.StandardScaler()
-
-    dataset_scaler = copy.deepcopy(dataset)
-    if isinstance(dataset_scaler, data.SourceFolderDataset):
-        dataset_scaler.random_chunks = False
-    else:
-        dataset_scaler.random_chunks = False
-        dataset_scaler.seq_duration = None
-
-    dataset_scaler.samples_per_track = 1
-    dataset_scaler.augmentations = None
-    dataset_scaler.random_track_mix = False
-    dataset_scaler.random_interferer_mix = False
-
-    pbar = tqdm.tqdm(range(len(dataset_scaler)), disable=args.quiet)
-    for ind in pbar:
-        x, y = dataset_scaler[ind]
-        pbar.set_description("Compute dataset statistics")
-        # downmix to mono channel
-        X = encoder(x[None, ...]).mean(1, keepdim=False).permute(0, 2, 1)
-
-        scaler.partial_fit(np.squeeze(X))
-
-    # set inital input scaler values
-    std = np.maximum(scaler.scale_, 1e-4 * np.max(scaler.scale_))
-
-    return scaler.mean_, std
-
 
 def main():
-    parser = argparse.ArgumentParser(description="Open Unmix Trainer")
+    parser = argparse.ArgumentParser(description="Open trainable_spectrogram Trainer")
 
     # which target do we want to train?
     parser.add_argument("--target", type=str, default="vocals",
@@ -202,6 +175,9 @@ def main():
     )
 
     # Dataset paramaters
+
+    parser.add_argument("--ds", type = int, default = 1, help="downsampling factor for the input data")
+
     parser.add_argument(
         "--dataset",
         type=str,
@@ -218,7 +194,7 @@ def main():
     parser.add_argument("--root", type=str, help="root path of dataset")
     parser.add_argument("--output",
         type=str,
-        default="open-unmix",
+        default="open-trainable_spectrogram",
         help="provide output path base folder name",
     )
     parser.add_argument("--model", type=str, help="Name or path of pretrained model to fine-tune")
@@ -253,24 +229,12 @@ def main():
 
     # Model Parameters
 
-    parser.add_argument("--use_edge", 
-        action="store_true",
-        default = False,
-        help = "Uses 'nb_layers' S-edge Layers for the main sequence to sequence" \
-        "mapping from the separation module : otherwise, basic LSTM will be used."
-    )
-
-
     parser.add_argument("--seq-dur",
         type=float,
         default=6.0,
         help="Sequence duration in seconds" "value of <=0.0 will use full/variable length",
     )
-    parser.add_argument("--unidirectional",
-        action="store_true",
-        default=False,
-        help="Use unidirectional LSTM",
-    )
+
     parser.add_argument("--nfft", type=int, default=4096, help="(STFT) fft size and window size")
     parser.add_argument("--nhop", type=int, default=1024, help="(STFT) hop size")
 
@@ -283,9 +247,6 @@ def main():
                         help = "Number of frequencies in the trainable spectrogram." \
                         "Standard choice is to set it equal to the number of states, but it can be higher... ")
     
-    # parser.add_argument("--progressive", action="store_true", default = False, 
-    #                     help = "If put as an argument, will compute the magssm-spectrogram by chunks not to overload the RAM.")
-    
     parser.add_argument("--chunk-dur", type=float, default = 6.0, # equiv to not progressive
                         help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \
                         "The input sequence will be split into chunks for computation by the SSM module")
@@ -295,11 +256,7 @@ def main():
                         help = "If put as an argument, will initialize the argument of the eigenvalues of the A-matrix " \
                         "according to a log scale to enhance resolution in the lower frequency domain")
 
-    parser.add_argument("--hidden-size",
-        type=int,
-        default=512,
-        help="hidden size parameter of bottleneck layers",
-    )
+    
     parser.add_argument("--bandwidth", 
                         type=int, default=16000, help="maximum model bandwidth in herz"
     )
@@ -317,10 +274,6 @@ def main():
         help="Speed up training init for dev purposes",
     )
 
-
-
-
-
     parser.add_argument("--hidden_size_factors", type = int, nargs = "+", default=None
         , help = "Give nb_layer factors. Hidden size in SEdge Layers will see their size reduced by the " \
         "factors the user precise in this field: ex for a desired decrease of 1;1/2;1/4" \
@@ -331,9 +284,8 @@ def main():
         "in the output size of the SEdge layers. Note that last layer factor must be 1" \
         "ex for a desired increase in output size of 1/4 ; 1/2 ; 1 the user should write --output....._factors 4 2 1 in the terminal "\
         "A standard choice is to set output_sizes = hidden_sizes[::-1] to have a reasonable nb of parameters")
+    
 
-
-    parser.add_argument("--nb_layers", type=int, default=3, help="Number of internal layers in the separation module")
 
     # Misc Parameters
     parser.add_argument("--quiet",
@@ -357,8 +309,11 @@ def main():
     dataloader_kwargs = {"num_workers": args.nb_workers, "pin_memory": True} if use_cuda else {}
 
     repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    repo = Repo(repo_dir)
-    commit = repo.head.commit.hexsha[:7]
+    try:
+        repo = Repo(repo_dir)
+        commit = repo.head.commit.hexsha[:7]
+    except Exception:
+        commit = "unknown"
 
     # use jpg or npy
     torch.manual_seed(args.seed)
@@ -369,7 +324,7 @@ def main():
 
     train_dataset, valid_dataset, args = data.load_datasets(parser, args)
 
-    args.sample_rate = train_dataset.sample_rate
+    args.sample_rate = train_dataset.sample_rate // args.ds
 
     # create output dir if not exist
     target_path = Path(args.output)
@@ -381,7 +336,7 @@ def main():
     valid_sampler = torch.utils.data.DataLoader(valid_dataset, batch_size=1, **dataloader_kwargs)
 
     stft, _ = transforms.make_filterbanks(
-        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate
+        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate 
     )
 
 
@@ -395,7 +350,7 @@ def main():
     separator_conf = {
         "nfft": args.nfft,
         "nhop": args.nhop,
-        "sample_rate": train_dataset.sample_rate,
+        "sample_rate": train_dataset.sample_rate // args.ds,
         "nb_channels": args.nb_channels,
         "nb_magssm_states" : args.nb_magssm_states
     }
@@ -403,84 +358,37 @@ def main():
     with open(Path(target_path, "separator.json"), "w") as outfile:
         outfile.write(json.dumps(separator_conf, indent=4, sort_keys=True))
 
-    # if args.checkpoint or args.model or args.debug:
-    #     scaler_mean = None
-    #     scaler_std = None
-    # else:
-    #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
-    # if args.checkpoint or args.model or args.debug:
-    #     scaler_mean = None
-    #     scaler_std = None
-    # else:
-    #     scaler_mean, scaler_std = get_statistics(args, encoder, train_dataset)
-
     if args.model: # fine tune model
         print(f"Fine-tuning model from {args.model}")
-        unmix = utils_edge_var.load_target_models(
+        trainable_spectrogram = utils_edge_var.load_target_models(
             args.target, model_str_or_path=args.model, device=device, pretrained=True, magssm=True
         )[args.target]
-        unmix = unmix.to(device)
-        # Réinitialiser les running stats du BatchNorm héritées du modèle source
-        # (évite les NaN en validation quand la taille du modèle a changé)
-        _nb_bn_reset = 0
-        for m in unmix.modules():
-            if isinstance(m, torch.nn.BatchNorm1d):
-                m.reset_running_stats()
-                _nb_bn_reset += 1
-        print(f"[INFO] Running stats réinitialisées pour {_nb_bn_reset} couche(s) BatchNorm1d")
-
-
+        trainable_spectrogram = trainable_spectrogram.to(device)
+        
     else:
         
-        chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate)
+        chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate) // args.ds
         d_out = args.nb_magssm_states if args.d_out is None else args.d_out
-
-        scaler_mean, scaler_std = None, None 
 
         scaler_mean, scaler_std = None, None
         
-        unmix = sedge_mask.SedgeMask(
-            input_mean=scaler_mean,
-            input_scale=scaler_std,
-            nb_bins=args.nfft // 2 + 1,
+        trainable_spectrogram = Trainable_spectrogram(
+            nb_bins = args.nfft // 2 + 1,
             nb_channels=args.nb_channels,
-            hidden_size=args.hidden_size,
-            nb_layers = args.nb_layers,
-            hidden_size_factors = args.hidden_size_factors,
-            output_size_factors = args.output_size_factors,
-            n_fft = args.nfft,
             n_hop = args.nhop,
             dim_state=args.nb_magssm_states,
-            d_out = d_out,
-            encoder  = encoder,
+            encoder = encoder,
             device = device,
-            use_edge = args.use_edge,
-            unidirectional = args.unidirectional,
-            # progressive = args.progressive,
             chunk_duration = chunk_duration_in_frames,
-            log_distributed_frequencies= args.mel
-            ).to(device)
+            log_distributed_frequencies= args.mel,
+        ).to(device)
+    
 
-        total_params = sum(p.numel() for p in unmix.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in trainable_spectrogram.parameters() if p.requires_grad)
         print(f"Total number of parameters: {total_params}")
 
 
-        #TODO 
-        # print expected memory usage for magssm step ~ Batch * chunk_duration * sample_rate * nb_of_states * 2(complex)
-        # 
-        #
-        #
-
-        # input_tensor = torch.rand((16,2,2049,255), dtype=torch.float32).to(device)
-        # torch.onnx.export(
-        #     unmix,
-        #     (input_tensor,),
-        #     "UMXEdge.onnx",
-        #     input_names=["input"]
-        # )
-
-
-    optimizer = torch.optim.AdamW(unmix.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(trainable_spectrogram.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -502,7 +410,7 @@ def main():
 
         target_model_path = Path(model_path, args.target + ".chkpnt")
         checkpoint = torch.load(target_model_path, map_location=device)
-        unmix.load_state_dict(checkpoint["state_dict"], strict=False)
+        trainable_spectrogram.load_state_dict(checkpoint["state_dict"], strict=False)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         # train for another epochs_trained
@@ -536,8 +444,8 @@ def main():
     for epoch in t:
         t.set_description("Training epoch")
         end = time.time()
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, scaler=scaler)
-        valid_loss = valid(args, unmix, encoder, device, valid_sampler, use_amp=args.amp)
+        train_loss = train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=scaler, ds = args.ds)
+        valid_loss = valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=args.amp, ds = args.ds)
         scheduler.step(valid_loss)
         train_losses.append(train_loss)
         valid_losses.append(valid_loss)
@@ -552,7 +460,7 @@ def main():
         utils.save_checkpoint(
             {
                 "epoch": epoch + 1,
-                "state_dict": unmix.state_dict(),
+                "state_dict": trainable_spectrogram.state_dict(),
                 "best_loss": es.best,
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
@@ -579,7 +487,7 @@ def main():
             outfile.write(json.dumps(params, indent=4, sort_keys=True))
 
         # --- Enregistrement de la trajectoire des valeurs propres ---
-        lambda_stats = collect_lambda_stats(unmix)
+        lambda_stats = collect_lambda_stats(trainable_spectrogram)
         lambda_history.append({"epoch": epoch, "lambda": lambda_stats})
         with open(lambda_log_path, "w") as f:
             json.dump(lambda_history, f, indent=2)
@@ -599,6 +507,7 @@ def main():
         if stop:
             print("Apply Early Stopping")
             break
+
 
 
 if __name__ == "__main__":

@@ -27,6 +27,81 @@ import utils_edge_var
 tqdm.monitor_interval = 0
 
 
+def collect_lambda_stats(model) -> dict:
+    """
+    Parcourt tous les modules Progressive_SSM du modèle et collecte,
+    pour chaque module, les statistiques du produit Lambda * Delta
+    (exposant de la discrétisation ZOH : Lambda_bar = exp(Lambda * Delta)).
+
+    Re(Lambda * Delta) = taux d'amortissement effectif par pas de temps
+                         → doit rester < 0 pour la stabilité
+    Im(Lambda * Delta) = fréquence d'oscillation en rad/sample
+                         → détermine la sélectivité fréquentielle de l'état
+
+    Retourne un dict JSON-serialisable :
+      {
+        "<module_name>": {
+            "ld_re_mean", "ld_re_min", "ld_re_max",   # Re(Λ·Δ)
+            "ld_im_mean", "ld_im_min", "ld_im_max",   # Im(Λ·Δ)
+            "lbar_mag_mean", "lbar_mag_max",           # |Lambda_bar| = exp(Re(Λ·Δ))
+            "n_unstable",    # nb états avec Re(Λ·Δ) > 0  ↔  |Λbar| > 1
+            "n_near_zero",   # nb états avec Re(Λ·Δ) > -1e-3  (quasi-instables)
+            "n_nan_params",
+        }, ...
+      }
+    """
+    try:
+        from model_edge.ssm_bis import Progressive_SSM
+    except ImportError:
+        return {}
+
+    stats = {}
+    # Si le modèle est wrappé (DDP), accéder au module sous-jacent
+    base = model.module if hasattr(model, 'module') else model
+
+    for name, mod in base.named_modules():
+        if not isinstance(mod, Progressive_SSM):
+            continue
+
+        with torch.no_grad():
+            L = mod.Lambda.detach().float()           # [N, 2]  (re, im bruts)
+            log_step = mod.log_step.detach().float()  # [N]
+            step = (mod.step_scale * torch.exp(log_step))  # Delta  [N]
+
+            # Produit Lambda * Delta — c'est l'exposant physiquement signifiant
+            Lambda_c = torch.complex(L[:, 0], L[:, 1])
+            LD = Lambda_c * step          # Lambda * Delta  [N] complexe
+            ld_re = LD.real               # taux d'amortissement effectif
+            ld_im = LD.imag               # fréquence en rad/sample
+
+            # Lambda_bar = exp(Lambda * Delta)  →  |Lambda_bar| = exp(Re(Λ·Δ))
+            Lambda_bar = torch.exp(LD)
+            mag = Lambda_bar.abs()        # [N]
+
+            n_nan = torch.isnan(L).any().item()
+
+            stats[name] = {
+                # Re(Lambda * Delta) — amortissement effectif
+                "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
+                "ld_re_min":  float(ld_re.min())  if not n_nan else None,
+                "ld_re_max":  float(ld_re.max())  if not n_nan else None,
+                "ld_re_med": float(torch.median(ld_re)) if not n_nan else None,
+                # Im(Lambda * Delta) — fréquence en rad/sample
+                "ld_im_mean": float(ld_im.mean()) if not n_nan else None,
+                "ld_im_min":  float(ld_im.min())  if not n_nan else None,
+                "ld_im_max":  float(ld_im.max())  if not n_nan else None,
+                "ld_im_med": float(torch.median(ld_im)) if not n_nan else None,
+                # |Lambda_bar| = exp(Re(Λ·Δ))
+                "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
+                "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Indicateurs de danger
+                "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
+                "n_nan_params": int(torch.isnan(L).sum()),
+            }
+    return stats
+
+
+
 class UnmixLitWrapper(pl.LightningModule):
     def __init__(self, unmix, encoder, args):
         super().__init__()
@@ -58,7 +133,7 @@ class UnmixLitWrapper(pl.LightningModule):
         self.log('val_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             self.unmix.parameters(), 
             lr=self.args.lr, 
             weight_decay=self.args.weight_decay
@@ -86,6 +161,7 @@ class JsonLogCallback(pl.Callback):
         self.train_losses = []
         self.valid_losses = []
         self.train_times = []
+        self.lambda_history = []  # trajectoire des valeurs propres (Lambda * Delta)
         self.best_loss = float('inf')
         self.best_epoch = 0
         self.epoch_start_time = 0
@@ -100,6 +176,10 @@ class JsonLogCallback(pl.Callback):
                     self.train_times = data.get("train_time_history", [])
                     self.best_loss = data.get("best_loss", float('inf'))
                     self.best_epoch = data.get("best_epoch", 0)
+            lambda_path = Path(args.checkpoint).expanduser() / "lambda_history.json"
+            if lambda_path.exists():
+                with open(lambda_path, "r") as f:
+                    self.lambda_history = json.load(f)
     def on_train_epoch_start(self, trainer, pl_module):
         self.epoch_start_time = time.time()
     def on_train_epoch_end(self, trainer, pl_module):
@@ -109,7 +189,7 @@ class JsonLogCallback(pl.Callback):
             self.train_losses.append(train_loss.item())
         
         self.train_times.append(time.time() - self.epoch_start_time)
-        self._save_json(trainer)
+        self._save_json(trainer, pl_module)
     def on_validation_epoch_end(self, trainer, pl_module):
         # Ignore la validation de test (sanity check) avant le début de l'entraînement
         if trainer.sanity_checking:
@@ -125,7 +205,7 @@ class JsonLogCallback(pl.Callback):
                 self.best_loss = val_loss_val
                 self.best_epoch = trainer.current_epoch
                 is_best = True
-        self._save_json(trainer)
+        self._save_json(trainer, pl_module)
 
         # Sauvegarde au format classique "pur" de l'ancien code (.chkpnt)
         if trainer.is_global_zero and valid_loss is not None:
@@ -144,7 +224,7 @@ class JsonLogCallback(pl.Callback):
                 target=self.args.target,
             )
 
-    def _save_json(self, trainer):
+    def _save_json(self, trainer, pl_module):
         # Sauvegarde le JSON uniquement sur le GPU 0 (pour éviter que les 2 GPUs écrivent en même temps)
         # On vérifie que les listes ont la même taille et qu'elles ne sont pas vides
         if trainer.is_global_zero and len(self.train_losses) == len(self.valid_losses) and len(self.train_losses) > 0:
@@ -168,6 +248,13 @@ class JsonLogCallback(pl.Callback):
             }
             with open(self.target_path / f"{self.args.target}.json", "w") as outfile:
                 json.dump(params, outfile, indent=4, sort_keys=True)
+
+            # Trajectoire des valeurs propres (Lambda * Delta) — collecte via pl_module.unmix
+            lambda_stats = collect_lambda_stats(pl_module.unmix)
+            self.lambda_history.append({"epoch": trainer.current_epoch, "lambda": lambda_stats})
+            with open(self.target_path / "lambda_history.json", "w") as f:
+                json.dump(self.lambda_history, f, indent=2)
+
 
 def get_statistics(args, encoder, dataset):
     encoder = copy.deepcopy(encoder).to("cpu")  # CPU explicite → pas de conflit GPU
@@ -284,9 +371,6 @@ def main():
                         help = "Number of frequencies in the trainable spectrogram." \
                         "Standard choice is to set it equal to the number of states, but it can be higher... ")
     
-    parser.add_argument("--progressive", action="store_true", default = False, 
-                        help = "If put as an argument, the MAGSSM will proceed by chunks on the input " \
-                        "not to overload the RAM")
     
     parser.add_argument("--chunk-dur", type=float, default = 6.0, # equiv to not progressive
                         help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \

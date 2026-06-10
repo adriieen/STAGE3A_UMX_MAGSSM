@@ -17,73 +17,6 @@ setup_paths()
 
 from model_edge.mimo_ssm import MIMOSSM
 
-
-class MagSSM(nn.Module):
-    """Trainable spectrogram
-
-    Args :
-    
-        nb_bins (int): Number of input time-frequency bins (Default: `4096`).
-        nb_channels (int): Number of input audio channels (Default: `2`).
-        n_fft (int) : parameter of the stft used as the encoder that we want to replicate in a trainable way
-        n_hop (int) : parameter of the stft used as the encoder that we want to replicate in a trainable way
-        dim_state (int) : dimension of hidden state of the SSM used for the transformation
-    """
-
-    def __init__(
-        self,
-        dim_state: int = 129,
-        d_out: int = 129,
-        device = None,
-        chunk_duration : Optional[int] = None,
-        subsampling_factor : int = 1024,
-        log_distributed_frequencies = False
-
-    ):
-        
-        super(MagSSM, self).__init__()
-  
-        self.mimo = MIMOSSM( 
-            d_in = 1,
-            d_state = dim_state,
-            d_out = d_out,
-            progressive = True,
-            chunk_duration = chunk_duration,
-            subsampling_factor = subsampling_factor,
-            log_distributed_frequencies = log_distributed_frequencies,
-            B_C_init='ones',
-            C_C_init= None,
-            )
-        
-        self.device = device
-        
-
-    def forward(self, x:Tensor) -> Tensor:
-
-        """Trainable STFT forward path
-            Args:
-                x (Tensor): audio waveform of
-                    shape (nb_samples, nb_channels, nb_timesteps)
-            Returns:
-                MagsSSM object (Tensor): complex 'stft of a kind' of
-                    shape (nb_samples, nb_channels, nb_bins, nb_frames)
-                    last axis is stacked real and imaginary
-            """
-  
-        nb_samples, nb_channels, nb_timesteps = x.data.shape #(B,2,T)
-
-        x = x.reshape (nb_samples*nb_channels, nb_timesteps) #(2*B,T)
-        x = x[..., None]  #(2B, T, 1)
-        x = self.mimo(x) #(2B, T/subsampling_factor, d_out)
-        
-        _, nb_frames, d_out = x.shape
-
-        x = x.reshape(nb_samples, nb_channels, nb_frames, d_out)
-        x = x.permute(0, 1, 3, 2)    # B,C,F,T
-
-        return x
-
-
         
 class MagSSM_Encoder(nn.Module):
     """Trainable spectrogram
@@ -99,7 +32,7 @@ class MagSSM_Encoder(nn.Module):
 
     def __init__(
         self,
-        d_in : int = 2,
+        d_in : int = 1,
         dim_state: int = 129,
         d_out: int = 129,
         device = None,
@@ -130,16 +63,16 @@ class MagSSM_Encoder(nn.Module):
         """Trainable STFT forward path
             Args:
                 x (Tensor): audio waveform of
-                    shape (nb_samples, nb_channels, nb_timesteps)
+                    shape (B, T)
             Returns:
                 MagsSSM object (Tensor): complex 'stft of a kind' of
-                    shape (nb_samples, nb_channels, nb_bins, nb_frames)
+                    shape (B,  nb_frames := T/subsampling factor , d_out)
                     last axis is stacked real and imaginary
             """
   
-        nb_samples, nb_channels, nb_timesteps = x.data.shape #(B,2,T) - audio
+        nb_samples,  nb_timesteps = x.data.shape #(B,T) - audio for each channel
 
-        x = x.permute(0,2,1) #(B,T,2)
+        x = x[..., None] # B, T, 1
 
         x = self.mimo(x) #(B, T/subsampling_factor, d_out)
         

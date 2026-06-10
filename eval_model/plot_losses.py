@@ -5,8 +5,9 @@ import numpy as np
 
 
 dic = {
-        "s512h512" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/magssm_fixed_init/s512h512/vocals.json"
-
+        "s512h512" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/magssm_fixed_init/s512h512/vocals.json",
+        "s256h512" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/magssm_fixed_init/s256h512/vocals.json",
+        "MagSSM-STFT-128bins" : "/home/adubois/openunmix/OpenUnmix/outputs/500ep/trainable_spectrograms/128bins/vocals.json"
 }
 
 for method, path in dic.items(): 
