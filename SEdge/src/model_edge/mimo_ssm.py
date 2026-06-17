@@ -22,7 +22,8 @@ class MIMOSSM(torch.nn.Module):
                  progressive = False,
                  chunk_duration : Optional[int] = None,
                  subsampling_factor = 1,
-                 log_distributed_frequencies = False
+                 log_distributed_frequencies = False,
+                 eps_stability: float = 1e-3
 
                 ):
         
@@ -71,7 +72,8 @@ class MIMOSSM(torch.nn.Module):
                 ensure_stability=stability,
                 chunk_duration = chunk_duration,
                 subsampling_factor = subsampling_factor,
-                log_distributed_frequencies = log_distributed_frequencies
+                log_distributed_frequencies = log_distributed_frequencies,
+                eps_stability = eps_stability
 
             )
             

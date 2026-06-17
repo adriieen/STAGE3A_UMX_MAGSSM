@@ -35,10 +35,15 @@ class MagSSM_Encoder(nn.Module):
         d_in : int = 1,
         dim_state: int = 129,
         d_out: int = 129,
+        B_C_init='ones',
+        C_C_init= None,
         device = None,
         chunk_duration : Optional[int] = None,
         subsampling_factor : int = 1024,
-        log_distributed_frequencies = False
+        log_distributed_frequencies = False,
+        eps_stability: float = 1e-3,
+        dt_min: float = 0.001,
+        dt_max: float = 0.1,
     ):
         
         super(MagSSM_Encoder, self).__init__()
@@ -51,8 +56,11 @@ class MagSSM_Encoder(nn.Module):
             chunk_duration = chunk_duration,
             subsampling_factor = subsampling_factor,
             log_distributed_frequencies = log_distributed_frequencies,
-            B_C_init='ones',
-            C_C_init= None,
+            B_C_init= B_C_init,
+            C_C_init= C_C_init,
+            eps_stability = eps_stability,
+            dt_min = dt_min,
+            dt_max = dt_max,
             )
         
         self.device = device
@@ -75,7 +83,7 @@ class MagSSM_Encoder(nn.Module):
         x = x[..., None] # B, T, 1
 
         x = self.mimo(x) #(B, T/subsampling_factor, d_out)
-        
+        # print(x)
         return x
 
 

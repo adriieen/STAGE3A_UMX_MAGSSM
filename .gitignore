@@ -2,6 +2,7 @@ data/
 outputs/
 evals/
 fig/
+fig_wrong/
 night_runs/
 runs/
 machine.yaml

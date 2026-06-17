@@ -14,12 +14,15 @@ class Trainable_spectrogram(nn.Module):
         nb_channels: int = 2,
         n_hop = 1024,
         dim_state = 129,
+        B_C_init = "ones",
+        C_C_init = None,
         encoder : Optional[nn.Module] = None,
         device = None,
         chunk_duration : Optional[int] = None,
         log_distributed_frequencies= False,
-        # conv_downsample_factor: int = 8,   # facteur de downsampling temporel via Conv2D
-        
+        eps_stability: float = 1e-3,
+        dt_min: float = 0.001,
+        dt_max: float = 0.1,
     ):
         super(Trainable_spectrogram, self).__init__()
         self.encoder = encoder
@@ -31,10 +34,15 @@ class Trainable_spectrogram(nn.Module):
             d_in = 1,
             dim_state = dim_state,
             d_out = nb_bins,
+            B_C_init = B_C_init,
+            C_C_init = C_C_init,
             device = device,
             log_distributed_frequencies = log_distributed_frequencies,
             chunk_duration = chunk_duration,
-            subsampling_factor = n_hop
+            subsampling_factor = n_hop,
+            eps_stability = eps_stability,
+            dt_min = dt_min,
+            dt_max = dt_max,
         ).to(device)
 
         # self.conv_downsample = nn.Sequential(

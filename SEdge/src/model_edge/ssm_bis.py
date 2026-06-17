@@ -329,7 +329,8 @@ class Progressive_SSM(torch.nn.Module):
                  chunk_duration = 264600,
                  subsampling_factor = 1,
                  log_distributed_frequencies= False,
-                 samplerate = 44100.0
+                 samplerate = 44100.0,
+                 eps_stability: float = 1e-3
                  ): 
         """The Modified S5 SSM
         Args:
@@ -368,6 +369,7 @@ class Progressive_SSM(torch.nn.Module):
         self.d_out = d_out
         self.subsampling_factor = subsampling_factor
         self.samplerate = samplerate
+        self.eps_stability = eps_stability
 
         assert chunk_duration > subsampling_factor, f"Chunk duration ({chunk_duration}) must be greater than the downsampling factor ({subsampling_factor})"
 
@@ -425,6 +427,11 @@ class Progressive_SSM(torch.nn.Module):
                             C_r[i,j] = 1
                
                 C_i = C_r.clone()
+
+            
+            if C_C_init == 'diagonal':
+                C_r = torch.eye(d_out, d_state)
+                C_i = torch.zeros(d_out,d_state)
                
             else : 
                 # orthogonal initialization of the C matrix
@@ -562,20 +569,23 @@ class Progressive_SSM(torch.nn.Module):
 
     def forward(self, signal):
 
-        eps_stability = 1e-8
+        step = self.step_scale * torch.exp(self.log_step)
+
+        eps_stability = self.eps_stability / torch.min(step)
 
         with torch.no_grad():
             if self.ensure_stability == 'relu':
-                self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0] + eps_stability) - eps_stability
-                self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0])
+                self.Lambda.data[:, 0] = -F.relu(- (self.Lambda.data[:, 0] + eps_stability)) - eps_stability  # stability : lambda real < - epsilon --> - (lambda + epsilon) > 0
+                # self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0])
                 # Lambda_c.real = -F.relu(-Lambda_c.real) # Ensure stability
             elif self.ensure_stability == 'abs':
                 self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0]).clamp(min=eps_stability)
-                self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
+                # self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
                 # Lambda = torch.complex(-torch.abs(Lambda.real), Lambda.imag)
 
         Lambda_c = as_complex(self.Lambda)
-        step = self.step_scale * torch.exp(self.log_step)
+
+       
 
 
         B_c = as_complex(self.B)
