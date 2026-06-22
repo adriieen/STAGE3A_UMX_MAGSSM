@@ -14,7 +14,8 @@ class Trainable_spectrogram(nn.Module):
         nb_channels: int = 2,
         n_hop = 1024,
         dim_state = 129,
-        B_C_init = "ones",
+        og = False,
+        B_C_init = None,
         C_C_init = None,
         encoder : Optional[nn.Module] = None,
         device = None,
@@ -34,6 +35,7 @@ class Trainable_spectrogram(nn.Module):
             d_in = 1,
             dim_state = dim_state,
             d_out = nb_bins,
+            og = og,
             B_C_init = B_C_init,
             C_C_init = C_C_init,
             device = device,
@@ -43,6 +45,7 @@ class Trainable_spectrogram(nn.Module):
             eps_stability = eps_stability,
             dt_min = dt_min,
             dt_max = dt_max,
+              
         ).to(device)
 
         # self.conv_downsample = nn.Sequential(

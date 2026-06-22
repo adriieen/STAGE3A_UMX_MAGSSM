@@ -134,7 +134,7 @@ def L2_im_lambda(model, alpha, beta):
 
     """
     loss = alpha * 1/N sum [w_i**2]
-    with w_i = ld_im - pi + beta if ld_im>pi and 0 otherwise,  ld_im = Im(Lambda * Delta) in rad/sample.
+    with w_i = ld_im - pi + beta if ld_im>pi ; |ld_im| + beta if ld_im <0 and 0 otherwise,  ld_im = Im(Lambda * Delta) in rad/sample.
 
     NOTE: computed fully in PyTorch (no detach / no numpy) so that
     gradients flow back to Lambda and log_step, and the optimizer
@@ -157,11 +157,15 @@ def L2_im_lambda(model, alpha, beta):
         LD = Lambda_c * step                               # Lambda * Delta [N]
         ld_im = LD.imag                                    # rad/sample [N]
 
-        # Penalise im > pi  
-        excess = torch.nn.functional.relu(ld_im - torch.pi)
-        w = excess + beta * (excess > 0).float()
+        # ld_im > pi  
+        excess_pos = torch.nn.functional.relu(ld_im - torch.pi)
+        w_pos = excess_pos + beta * (excess_pos > 0).float()
 
-        penalties.append(w.pow(2).mean())
+        # ld_im < 0  
+        excess_neg = torch.nn.functional.relu(-ld_im)          # |ld_im| si ld_im<0, sinon 0
+        w_neg = excess_neg + beta * (excess_neg > 0).float()
+
+        penalties.append((w_pos.pow(2) + w_neg.pow(2)).mean())
 
     if not penalties:
         return 0.0
@@ -384,6 +388,10 @@ def main():
                         action="store_true", default=False, help="Use automatic mixed precision (AMP) during training"
     )
 
+    parser.add_argument("--og", action = "store_true", default = False, 
+    help = "Uses initialization of eigenvalues and B matrix from the original MagSSM paper -- B as orthogonal and linearly spaced eigenvalues"
+    )
+
 
     args, _ = parser.parse_known_args()
 
@@ -476,6 +484,8 @@ def main():
             nb_channels=args.nb_channels,
             n_hop = args.nhop,
             dim_state=args.nb_magssm_states,
+            og= args.og,
+            B_C_init= "orthogonal" if args.og else "ones", 
             encoder = encoder,
             device = device,
             chunk_duration = chunk_duration_in_frames,

@@ -36,7 +36,7 @@ def discretize_zoh(Lambda, B, B_bias, Delta, bias):
     else:
         B_concat = B
     Lambda_bar = torch.exp(Lambda * Delta)
-    # Formule ZOH stable : quand Lambda→0, (exp(L*Δ)-1)/L → Δ (limite analytique)
+    # stabilized : Lambda→0, (exp(L*Δ)-1)/L → Δ : taylor order 1
     safe_Lambda = torch.where(Lambda.abs() < 1e-6, torch.ones_like(Lambda), Lambda)
     B_bar = ((Lambda_bar - 1) / safe_Lambda)[..., None] * B_concat
     return Lambda_bar, B_bar
@@ -322,7 +322,8 @@ class Progressive_SSM(torch.nn.Module):
                  bias_init='zero',
                  output_bias=False,
                  complex_output=False,
-                 B_C_init='ones',
+                 og = False,
+                 B_C_init= None,
                  C_C_init= None,
                  ensure_stability='abs',
                  symmetric=False,
@@ -347,14 +348,14 @@ class Progressive_SSM(torch.nn.Module):
         super().__init__()
         self.symmetric = symmetric
 
-        # self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
-
-        Lambda = make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies)
-
         self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
 
-        #initializing the lambdas with the structure specified in init.
-        Lambda = Lambda / torch.exp(self.log_step)[:, None]
+        if og:
+            Lambda = make_linear_eigenvalues(d_state, symmetric=self.symmetric)
+        else:
+            Lambda = make_spectrograms_eigenvalues(d_state, log_distributed_frequencies = log_distributed_frequencies)
+            #initializing the lambdas with the structure specified in init.
+            Lambda = Lambda / torch.exp(self.log_step)[:, None]
 
         self.Lambda = torch.nn.Parameter(Lambda)
 
@@ -372,7 +373,6 @@ class Progressive_SSM(torch.nn.Module):
         self.eps_stability = eps_stability
 
         assert chunk_duration > subsampling_factor, f"Chunk duration ({chunk_duration}) must be greater than the downsampling factor ({subsampling_factor})"
-
 
 
         if self.input_bias:
