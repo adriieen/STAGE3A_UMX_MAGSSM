@@ -217,6 +217,11 @@ def main():
                         "in the output size of the SEdge layers. Note that last layer factor must be 1" \
                         "ex for a desired increase in output size of 1/4 ; 1/2 ; 1 the user should write --output....._factors 4 2 1 in the terminal "\
                         "A standard choice is to set output_sizes = hidden_sizes[::-1] to have a reasonable nb of parameters")
+
+    parser.add_argument("--regularize_window", action="store_true", default=False, help="Regularize the window function with the exponential decaying window eps.e^(-lambda.t)")
+    parser.add_argument("--epsilon_w", type=float, default=1e-3, help="epsilon for window regularization")
+    parser.add_argument("--lambda_w", type=float, default=0.01, help="lambda for window regularization."\
+        "A typical order of magnitude is to have lambda * N_fft ~ 10 to ensure a smooth decay of the spectral repsonse.")
     
 
     args, _ = parser.parse_known_args()
@@ -248,8 +253,9 @@ def main():
     valid_sampler = torch.utils.data.DataLoader(valid_dataset, batch_size=1, **dataloader_kwargs)
 
     stft, _ = transforms.make_filterbanks(
-        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate
-    )
+        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate,
+        regularize=args.regularize_window, epsilon=args.epsilon_w, lambda_val=args.lambda_w,)
+
     encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
 
     separator_conf = {
@@ -257,6 +263,9 @@ def main():
         "nhop": args.nhop,
         "sample_rate": train_dataset.sample_rate,
         "nb_channels": args.nb_channels,
+        "regularize_window": args.regularize_window,
+        "epsilon_w": args.epsilon_w,
+        "lambda_w": args.lambda_w,
     }
 
     with open(Path(target_path, "separator.json"), "w") as outfile:

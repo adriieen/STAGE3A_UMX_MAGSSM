@@ -13,8 +13,52 @@ except ImportError:
     pass
 
 
-def make_filterbanks(n_fft=4096, n_hop=1024, center=False, sample_rate=44100.0, method="torch"):
-    window = torch.hann_window(n_fft) + 1e-4
+def get_regularised_window(
+    n_fft: int,
+    epsilon: float = 1e-3,
+    lambda_val: float = 0.01,
+    device: str = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Build a Hann window regularised with an exponential decay.
+
+    The returned tensor is ``hann(n_fft) + epsilon * exp(-lambda_val * t)``
+    where *t* runs from 0 to ``n_fft - 1``.  The exponential tail forces
+    energy into the causal (early) part of the window, promoting a
+    minimum-phase impulse response.
+
+    Args:
+        n_fft:       Window (and FFT) size.
+        epsilon:     Amplitude of the exponential regularisation term.
+        lambda_val:  Decay rate of the exponential (larger → faster decay).
+        device:      Torch device for the output tensor.
+        dtype:       Floating-point dtype (default ``torch.float32``).
+
+    Returns:
+        Tensor of shape ``(n_fft,)`` with ``requires_grad=False``.
+    """
+    hann = torch.hann_window(n_fft, device=device, dtype=dtype)
+    t = torch.arange(n_fft, device=device, dtype=dtype)
+    reg = epsilon * torch.exp(-lambda_val * t)
+    window = hann + reg
+    window = window.detach().requires_grad_(False)
+    return window
+
+
+def make_filterbanks(
+    n_fft=4096,
+    n_hop=1024,
+    center=False,
+    sample_rate=44100.0,
+    method="torch",
+    regularize=False,
+    epsilon=1e-3,
+    lambda_val=0.01,
+):
+    if regularize:
+        window = get_regularised_window(n_fft, epsilon=epsilon, lambda_val=lambda_val)
+    else:
+        window = torch.hann_window(n_fft) + 1e-4
 
     if method == "torch":
         encoder = TorchSTFT(n_fft=n_fft, n_hop=n_hop, window=window, center=center)

@@ -9,7 +9,7 @@ from torch.nn import LSTM, BatchNorm1d, Linear, Parameter
 from filtering import wiener
 from transforms import make_filterbanks, ComplexNorm
 from magssm import MagSSM_Encoder
-from utils_edge_var import LogNormalizer
+
 
 from path_config import setup_paths, amp_autocast
 setup_paths()
@@ -305,7 +305,10 @@ class Separator(nn.Module):
         nb_channels: int = 2,
         wiener_win_len: Optional[int] = 300,
         filterbank: str = "torch",
-        device = None
+        device = None,
+        regularize: bool = False,
+        epsilon: float = 1e-3,
+        lambda_val: float = 0.01,
     ):
         super(Separator, self).__init__()
 
@@ -319,6 +322,9 @@ class Separator(nn.Module):
             n_hop=n_hop,
             method=filterbank,
             sample_rate=sample_rate,
+            regularize=regularize,
+            epsilon=epsilon,
+            lambda_val=lambda_val,
         )
         self.complexnorm = ComplexNorm(mono=nb_channels == 1)
 

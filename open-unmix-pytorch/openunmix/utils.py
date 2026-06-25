@@ -229,6 +229,9 @@ def load_separator(
             n_hop=enc_conf["nhop"],
             nb_channels=enc_conf["nb_channels"],
             filterbank=filterbank,
+            regularize=enc_conf.get("regularize_window", False),
+            epsilon=enc_conf.get("epsilon_w", 1e-3),
+            lambda_val=enc_conf.get("lambda_w", 0.01),
         ).to(device)
 
     # otherwise we load the separator from torchhub

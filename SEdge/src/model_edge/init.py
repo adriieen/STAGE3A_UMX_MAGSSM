@@ -51,7 +51,7 @@ def make_spectrograms_eigenvalues(N, log_distributed_frequencies= True):
 
     if not log_distributed_frequencies:
         omega = torch.linspace(0,torch.pi, N)
-    
+        print("init of imaginary parts in linear space")
     else:
         log_scale = torch.linspace(0, np.log(1+np.pi), N)
         omega = (torch.exp(log_scale) - 1).to(torch.float32)

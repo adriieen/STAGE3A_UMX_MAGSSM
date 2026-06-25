@@ -19,6 +19,7 @@ import random
 from git import Repo
 import copy
 import torchaudio
+import shutil
 
 
 import data
@@ -41,7 +42,151 @@ def print_rank0(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed=False, scaler=None):
+# ---------------------------------------------------------------------------
+# Tracking des valeurs propres Lambda du SSM
+# ---------------------------------------------------------------------------
+
+def collect_lambda_stats(mod_model) -> dict:
+    """
+    Parcourt tous les modules Progressive_SSM du modèle et collecte,
+    pour chaque module, les statistiques du produit Lambda * Delta
+    (exposant de la discrétisation ZOH : Lambda_bar = exp(Lambda * Delta)).
+
+    Re(Lambda * Delta) = taux d'amortissement effectif par pas de temps
+                         → doit rester < 0 pour la stabilité
+    Im(Lambda * Delta) = fréquence d'oscillation en rad/sample
+                         → détermine la sélectivité fréquentielle de l'état
+
+    Retourne un dict JSON-serialisable :
+      {
+        "<module_name>": {
+            "ld_re_mean", "ld_re_min", "ld_re_max",   # Re(Λ·Δ)
+            "ld_im_mean", "ld_im_min", "ld_im_max",   # Im(Λ·Δ)
+            "lbar_mag_mean", "lbar_mag_max",           # |Lambda_bar| = exp(Re(Λ·Δ))
+            "n_unstable",    # nb états avec Re(Λ·Δ) > 0  ↔  |Λbar| > 1
+            "n_near_zero",   # nb états avec Re(Λ·Δ) > -1e-3  (quasi-instables)
+            "n_nan_params",
+        }, ...
+      }
+    """
+    try:
+        from model_edge.ssm_bis import Progressive_SSM
+    except ImportError:
+        return {}
+
+    stats = {}
+    # Si le modèle est wrappé (DDP), accéder au module sous-jacent
+    base = mod_model.module if hasattr(mod_model, 'module') else mod_model
+
+    for name, mod in base.named_modules():
+        if not isinstance(mod, Progressive_SSM):
+            continue
+
+        with torch.no_grad():
+            L = mod.Lambda.detach().float()           # [N, 2]  (re, im bruts)
+            log_step = mod.log_step.detach().float()  # [N]
+            step = (mod.step_scale * torch.exp(log_step))  # Delta  [N]
+
+            # Produit Lambda * Delta — c'est l'exposant physiquement signifiant
+            Lambda_c = torch.complex(L[:, 0], L[:, 1])
+            LD = Lambda_c * step          # Lambda * Delta  [N] complexe
+            ld_re = LD.real               # taux d'amortissement effectif
+            ld_im = LD.imag               # fréquence en rad/sample
+
+            # Lambda_bar = exp(Lambda * Delta)  →  |Lambda_bar| = exp(Re(Λ·Δ))
+            Lambda_bar = torch.exp(LD)
+            mag = Lambda_bar.abs()        # [N]
+
+            n_nan = torch.isnan(L).any().item()
+
+            stats[name] = {
+                # Re(Lambda * Delta) — amortissement effectif
+                "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
+                "ld_re_min":  float(ld_re.min())  if not n_nan else None,
+                "ld_re_max":  float(ld_re.max())  if not n_nan else None,
+                # Im(Lambda * Delta) — fréquence en rad/sample
+                "ld_im_mean": float(ld_im.mean()) if not n_nan else None,
+                "ld_im_min":  float(ld_im.min())  if not n_nan else None,
+                "ld_im_max":  float(ld_im.max())  if not n_nan else None,
+                "ld_im_q1":  float(torch.quantile(ld_im, 0.25)) if not n_nan else None,
+                "ld_im_q3":  float(torch.quantile(ld_im, 0.75)) if not n_nan else None,
+                "ld_im_med":  float(torch.median(ld_im)) if not n_nan else None,
+                # |Lambda_bar| = exp(Re(Λ·Δ))
+                "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
+                "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Indicateurs de danger
+                "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
+                "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
+                "n_nan_params": int(torch.isnan(L).sum()),
+            }
+    return stats
+
+
+def save_spectrograms(true_spectrogram, predicted_spectrogram, save_path: str):
+    """
+    Saves the true and predicted spectrograms as a JSON file.
+    Tensors have format (1, C, F, T) — batch=1, C=2 channels, F frequencies, T frames.
+    The JSON structure is:
+      {
+        "true_spectrogram":      list[list[list[list[float]]]],  # shape (1, C, F, T)
+        "predicted_spectrogram": list[list[list[list[float]]]],  # shape (1, C, F, T)
+      }
+    """
+    true_np = true_spectrogram.detach().cpu().numpy()
+    pred_np = predicted_spectrogram.detach().cpu().numpy()
+    data_out = {
+        "true_spectrogram": true_np.tolist(),
+        "predicted_spectrogram": pred_np.tolist(),
+    }
+    with open(save_path, "w") as f:
+        json.dump(data_out, f)
+
+
+def L2_im_lambda(mod_model, alpha, beta):
+    try:
+        from model_edge.ssm_bis import Progressive_SSM
+    except ImportError:
+        return 0.0
+
+    """
+    loss = alpha * 1/N sum [w_i**2]
+    with w_i = ld_im - pi + beta if ld_im>pi and 0 otherwise,  ld_im = Im(Lambda * Delta) in rad/sample.
+
+    NOTE: computed fully in PyTorch (no detach / no numpy) so that
+    gradients flow back to Lambda and log_step, and the optimizer
+    actually feels the regularization penalty.
+    """
+
+    base = mod_model.module if hasattr(mod_model, 'module') else mod_model
+    penalties = []
+
+    for name, mod in base.named_modules():
+        if not isinstance(mod, Progressive_SSM):
+            continue
+
+        # Keep full gradient graph
+        L = mod.Lambda.float()                             # [N, 2]
+        log_step = mod.log_step.float()                    # [N]
+        step = mod.step_scale * torch.exp(log_step)        # Delta [N]
+
+        Lambda_c = torch.complex(L[:, 0], L[:, 1])
+        LD = Lambda_c * step                               # Lambda * Delta [N]
+        ld_im = LD.imag                                    # rad/sample [N]
+
+        # Penalise im > pi
+        excess = torch.nn.functional.relu(ld_im - torch.pi)
+        w = excess + beta * (excess > 0).float()
+
+        penalties.append(w.pow(2).mean())
+
+    if not penalties:
+        return 0.0
+
+    return alpha * torch.stack(penalties).mean()
+
+
+
+def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed=False, scaler=None, alpha=0.0, beta=0.0):
     losses = utils.AverageMeter()
     nan_batches = 0
     unmix.train()
@@ -60,7 +205,7 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
 
         with amp_autocast(enabled=use_amp):
             Y_hat = unmix(x, X=X)
-            loss = torch.nn.functional.mse_loss(Y_hat, Y)
+            loss = torch.nn.functional.mse_loss(Y_hat, Y) + L2_im_lambda(unmix, alpha, beta)
 
         # Detecter un NaN/Inf avant le backward pour eviter de corrompre les poids
         if not torch.isfinite(loss):
@@ -101,9 +246,10 @@ def train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed
         return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False, use_amp=False):
+def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False, use_amp=False, alpha=0.0, beta=0.0, saving_path=None):
     losses = utils.AverageMeter()
     unmix.eval()
+    Y, Y_hat = None, None
     with torch.no_grad():
         for x, y in valid_sampler:
             x, y = x.to(device), y.to(device)
@@ -111,11 +257,14 @@ def valid(args, unmix, encoder, device, valid_sampler, is_distributed=False, use
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 Y_hat = unmix(x)
                 Y = encoder(y)
-                loss = torch.nn.functional.mse_loss(Y_hat, Y)
+                loss = torch.nn.functional.mse_loss(Y_hat, Y) + L2_im_lambda(unmix, alpha, beta)
 
             if not torch.isfinite(loss):
                 continue  # ignorer les batches de validation avec NaN
             losses.update(loss.item(), Y.size(1))
+
+        if saving_path is not None and Y is not None and Y_hat is not None:
+            save_spectrograms(Y, Y_hat, saving_path)
 
     if is_distributed:
         loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
@@ -217,6 +366,14 @@ def main():
     )
     parser.add_argument("--weight-decay", type=float, default=0.00001, help="weight decay")
     parser.add_argument("--seed", type=int, default=42, metavar="S", help="random seed (default: 42)")
+
+    parser.add_argument("--alpha", type=float, default=0, help="factor that multiplies the L2 loss of the imaginary parts of the eigenvalues of the MAGSSM. No regularization per default")
+
+    parser.add_argument("--beta", type=float, default=1, help="offset on the imaginary parts (frequencies) of the eigenvalues of the MAGSSM that are above pi if one wishes to have a stricter boundary.")
+
+    parser.add_argument("--eps-stability", type=float, default=1e-3,
+        help="Stability margin epsilon used in Progressive_SSM.forward() to clamp eigenvalue real parts "
+             "away from 0. Smaller = tighter stability constraint. (default: 1e-3)")
 
     # Model Parameters
 
@@ -477,7 +634,8 @@ def main():
             use_edge=args.use_edge,
             unidirectional=args.unidirectional,
             chunk_duration=chunk_duration_in_frames,
-            log_distributed_frequencies=args.mel
+            log_distributed_frequencies=args.mel,
+            eps_stability=args.eps_stability,
         ).to(device)
 
         total_params = sum(p.numel() for p in unmix.parameters() if p.requires_grad)
@@ -527,6 +685,19 @@ def main():
         train_times = []
         best_epoch = 0
 
+    # Historique des valeurs propres — un enregistrement par époque (rank 0 seulement)
+    lambda_log_path = Path(target_path, args.target + "_lambda.json")
+    if global_rank == 0:
+        if lambda_log_path.exists():
+            with open(lambda_log_path) as f:
+                lambda_history = json.load(f)  # reprend si checkpoint
+        else:
+            lambda_history = []  # liste de dicts {epoch, stats_par_module}
+    else:
+        lambda_history = []
+
+    saving_path = Path(target_path, args.target + "_spectrograms.json")
+
     # Wrap model with DistributedDataParallel after potentially loading checkpoint
     if is_distributed:
         unmix = torch.nn.parallel.DistributedDataParallel(
@@ -542,8 +713,8 @@ def main():
         t.set_description("Training epoch")
         end = time.time()
         
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed, scaler=amp_scaler)
-        valid_loss = valid(args, unmix, encoder, device, valid_sampler, is_distributed, use_amp=args.amp)
+        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer, is_distributed, scaler=amp_scaler, alpha=args.alpha, beta=args.beta)
+        valid_loss = valid(args, unmix, encoder, device, valid_sampler, is_distributed, use_amp=args.amp, alpha=args.alpha, beta=args.beta, saving_path=saving_path if global_rank == 0 else None)
         
         # Scheduler and early stopping run on all ranks since validation loss is synced
         scheduler.step(valid_loss)
@@ -556,6 +727,8 @@ def main():
 
         if valid_loss == es.best:
             best_epoch = epoch
+            if global_rank == 0 and saving_path.exists():
+                shutil.copyfile(saving_path, Path(target_path, args.target + "_spectrograms_best.json"))
 
         # Save checkpoint only on global rank 0
         if global_rank == 0:
@@ -588,6 +761,21 @@ def main():
 
             with open(Path(target_path, args.target + ".json"), "w") as outfile:
                 outfile.write(json.dumps(params, indent=4, sort_keys=True))
+
+            # --- Enregistrement de la trajectoire des valeurs propres ---
+            lambda_stats = collect_lambda_stats(unmix)
+            lambda_history.append({"epoch": epoch, "lambda": lambda_stats})
+            with open(lambda_log_path, "w") as f:
+                json.dump(lambda_history, f, indent=2)
+
+            # Alerte console si des états deviennent instables
+            for mod_name, s in lambda_stats.items():
+                if s.get("n_nan_params", 0) > 0:
+                    print_rank0(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: NaN dans Lambda ({s['n_nan_params']} params)")
+                elif s.get("n_unstable", 0) > 0:
+                    print_rank0(f"[Lambda] ⚠ EPOCH {epoch} — {mod_name}: {s['n_unstable']} états instables (Re(Λ·Δ)>0), ld_re_max={s['ld_re_max']:.3e}")
+                elif s.get("ld_re_max") is not None and s["ld_re_max"] > -1e-3:
+                    print_rank0(f"[Lambda] ! EPOCH {epoch} — {mod_name}: ld_re_max={s['ld_re_max']:.3e} (Re(Λ·Δ) proche de 0)")
 
         train_times.append(time.time() - end)
 

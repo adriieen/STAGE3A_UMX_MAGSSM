@@ -215,7 +215,7 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
     return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, ds=1, alpha = 1e-2, beta = 0, saving_path = None):
+def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, ds=1, alpha = 1e-2, beta = 0):
     losses = utils.AverageMeter()
     trainable_spectrogram.eval()
     X, X_hat = None, None
@@ -233,10 +233,7 @@ def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=F
                 continue
             losses.update(loss.item(), X.size(1))
         
-        if saving_path is not None and X is not None and X_hat is not None:
-            save_spectrograms(X, X_hat, saving_path)
-        
-        return losses.avg if losses.count > 0 else float('nan')
+        return (losses.avg if losses.count > 0 else float('nan')), X, X_hat
 
 
 
@@ -372,7 +369,12 @@ def main():
         "in the output size of the SEdge layers. Note that last layer factor must be 1" \
         "ex for a desired increase in output size of 1/4 ; 1/2 ; 1 the user should write --output....._factors 4 2 1 in the terminal "\
         "A standard choice is to set output_sizes = hidden_sizes[::-1] to have a reasonable nb of parameters")
-    
+
+    parser.add_argument("--regularize_window", action="store_true", default=False, help="Regularize the window function with the exponential decaying window eps.e^(-lambda.t)")
+    parser.add_argument("--epsilon_w", type=float, default=1e-3, help="epsilon for window regularization")
+    parser.add_argument("--lambda_w", type=float, default=0.01, help="lambda for window regularization."\
+        "A typical order of magnitude is to have lambda * N_fft ~ 10 to ensure a smooth decay of the spectral response.")
+
 
 
     # Misc Parameters
@@ -428,7 +430,8 @@ def main():
     valid_sampler = torch.utils.data.DataLoader(valid_dataset, batch_size=1, **dataloader_kwargs)
 
     stft, _ = transforms.make_filterbanks(
-        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate 
+        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate,
+        regularize=args.regularize_window, epsilon=args.epsilon_w, lambda_val=args.lambda_w,
     )
 
 
@@ -444,7 +447,10 @@ def main():
         "nhop": args.nhop,
         "sample_rate": train_dataset.sample_rate // args.ds,
         "nb_channels": args.nb_channels,
-        "nb_magssm_states" : args.nb_magssm_states
+        "nb_magssm_states" : args.nb_magssm_states,
+        "regularize_window": args.regularize_window,
+        "epsilon_w": args.epsilon_w,
+        "lambda_w": args.lambda_w,
     }
 
     with open(Path(target_path, "separator.json"), "w") as outfile:
@@ -562,13 +568,13 @@ def main():
     else:
         lambda_history = []  # liste de dicts {epoch, stats_par_module}
 
-    saving_path = Path(target_path, args.target + "_spectrograms.json")
+    saving_path_best = Path(target_path, args.target + "_spectrograms_best.json")
 
     for epoch in t:
         t.set_description("Training epoch")
         end = time.time()
         train_loss = train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=scaler, ds = args.ds, alpha=args.alpha, beta = args.beta)
-        valid_loss = valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=args.amp, ds = args.ds, alpha=args.alpha, beta = args.beta, saving_path = saving_path)
+        valid_loss, X_val, X_hat_val = valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=args.amp, ds = args.ds, alpha=args.alpha, beta = args.beta)
         scheduler.step(valid_loss)
         train_losses.append(train_loss)
         valid_losses.append(valid_loss)
@@ -579,8 +585,8 @@ def main():
 
         if valid_loss == es.best:
             best_epoch = epoch
-            if saving_path.exists():
-                shutil.copyfile(saving_path, Path(target_path, args.target + "_spectrograms_best.json"))
+            if X_val is not None and X_hat_val is not None:
+                save_spectrograms(X_val, X_hat_val, saving_path_best)
 
         utils.save_checkpoint(
             {

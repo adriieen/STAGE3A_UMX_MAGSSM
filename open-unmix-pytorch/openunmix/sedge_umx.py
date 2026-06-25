@@ -237,6 +237,9 @@ class Separator(nn.Module):
         nb_channels: int = 2,
         wiener_win_len: Optional[int] = 300,
         filterbank: str = "torch",
+        regularize: bool = False,
+        epsilon: float = 1e-3,
+        lambda_val: float = 0.01,
 
     ):
         super(Separator, self).__init__()
@@ -253,6 +256,9 @@ class Separator(nn.Module):
             center=True,
             method=filterbank,
             sample_rate=sample_rate,
+            regularize=regularize,
+            epsilon=epsilon,
+            lambda_val=lambda_val,
         )
         self.complexnorm = ComplexNorm(mono=nb_channels == 1)
 

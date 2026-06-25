@@ -8,8 +8,8 @@ import musdb
 import museval
 import torch
 import tqdm
-import utils_edge_var
 import utils
+import utils_edge_var
 
 def separate_and_evaluate(
     track: musdb.MultiTrack,

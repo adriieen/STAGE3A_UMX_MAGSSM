@@ -123,6 +123,9 @@ def collect_lambda_stats(model) -> dict:
                 "ld_im_mean": float(ld_im.mean()) if not n_nan else None,
                 "ld_im_min":  float(ld_im.min())  if not n_nan else None,
                 "ld_im_max":  float(ld_im.max())  if not n_nan else None,
+                "ld_im_q1":  float(torch.quantile(ld_im, 0.25)) if not n_nan else None,
+                "ld_im_q3":  float(torch.quantile(ld_im, 0.75)) if not n_nan else None,
+                "ld_im_med":  float(torch.median(ld_im)) if not n_nan else None,
                 # |Lambda_bar| = exp(Re(Λ·Δ))
                 "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
                 "lbar_mag_max":  float(mag.max())  if not n_nan else None,
@@ -134,8 +137,55 @@ def collect_lambda_stats(model) -> dict:
     return stats
 
 
+def L2_im_lambda(model, alpha, beta):
+    try:
+        from model_edge.ssm_bis import Progressive_SSM
+    except ImportError:
+        return 0.0
+
+    """
+    loss = alpha * 1/N sum [w_i**2]
+    with w_i = ld_im - pi + beta if ld_im>pi ; |ld_im| + beta if ld_im <0 and 0 otherwise,  ld_im = Im(Lambda * Delta) in rad/sample.
+
+    NOTE: computed fully in PyTorch (no detach / no numpy) so that
+    gradients flow back to Lambda and log_step, and the optimizer
+    actually feels the regularization penalty.
+    """
+
+    base = model.module if hasattr(model, 'module') else model
+    penalties = []
+
+    for name, mod in base.named_modules():
+        if not isinstance(mod, Progressive_SSM):
+            continue
+
+        # Keep full gradient graph
+        L = mod.Lambda.float()                             # [N, 2]
+        log_step = mod.log_step.float()                    # [N]
+        step = mod.step_scale * torch.exp(log_step)        # Delta [N]
+
+        Lambda_c = torch.complex(L[:, 0], L[:, 1])
+        LD = Lambda_c * step                               # Lambda * Delta [N]
+        ld_im = LD.imag                                    # rad/sample [N]
+
+        # ld_im > pi
+        excess_pos = torch.nn.functional.relu(ld_im - torch.pi)
+        w_pos = excess_pos + beta * (excess_pos > 0).float()
+
+        # ld_im < 0
+        excess_neg = torch.nn.functional.relu(-ld_im)          # |ld_im| si ld_im<0, sinon 0
+        w_neg = excess_neg + beta * (excess_neg > 0).float()
+
+        penalties.append((w_pos.pow(2) + w_neg.pow(2)).mean())
+
+    if not penalties:
+        return 0.0
+
+    return alpha * torch.stack(penalties).mean()
+
+
 def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer,
-          is_distributed=False, scaler=None, ds =1):
+          is_distributed=False, scaler=None, ds=1, alpha=1e-2, beta=0):
     losses = utils.AverageMeter()
     nan_batches = 0
     trainable_spectrogram.train()
@@ -154,7 +204,7 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
 
         with amp_autocast(enabled=use_amp):
             X_hat = trainable_spectrogram(x)
-            loss = torch.nn.functional.mse_loss(X_hat, X)
+            loss = torch.nn.functional.mse_loss(X_hat, X) + L2_im_lambda(trainable_spectrogram, alpha, beta)
 
         if not torch.isfinite(loss):
             nan_batches += 1
@@ -194,7 +244,8 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
 
 
 def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
-          is_distributed=False, use_amp=False, ds = 1, stft_saving_path=None, magssm_saving_path=None):
+          is_distributed=False, use_amp=False, ds=1, alpha=1e-2, beta=0):
+    """Retourne (avg_loss, X_last, X_hat_last) sans écrire sur disque."""
     losses = utils.AverageMeter()
     trainable_spectrogram.eval()
     X, X_hat = None, None
@@ -206,27 +257,22 @@ def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 X_hat = trainable_spectrogram(x)
                 X = encoder(x)
-                loss = torch.nn.functional.mse_loss(X_hat, X)
+                loss = torch.nn.functional.mse_loss(X_hat, X) + L2_im_lambda(trainable_spectrogram, alpha, beta)
 
             if not torch.isfinite(loss):
                 continue  # ignorer les batches de validation avec NaN
             losses.update(loss.item(), X.size(1))
-
-        if stft_saving_path is not None and X is not None:
-            save_spectrogram(X, stft_saving_path)
-        if magssm_saving_path is not None and X_hat is not None:
-            save_spectrogram(X_hat, magssm_saving_path)
 
     if is_distributed:
         loss_sum = torch.tensor(losses.sum if losses.count > 0 else 0.0, device=device)
         count_sum = torch.tensor(float(losses.count), device=device)
         dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM)
         dist.all_reduce(count_sum, op=dist.ReduceOp.SUM)
-        if count_sum.item() == 0:
-            return float('nan')
-        return (loss_sum / count_sum).item()
+        avg_loss = (loss_sum / count_sum).item() if count_sum.item() > 0 else float('nan')
     else:
-        return losses.avg if losses.count > 0 else float('nan')
+        avg_loss = losses.avg if losses.count > 0 else float('nan')
+
+    return avg_loss, X, X_hat
 
 
 def main():
@@ -291,6 +337,22 @@ def main():
     )
     parser.add_argument("--weight-decay", type=float, default=0.00001, help="weight decay")
     parser.add_argument("--seed", type=int, default=42, metavar="S", help="random seed (default: 42)")
+
+    parser.add_argument("--alpha", type=float, default=0,
+        help="factor that multiplies the L2 loss of the imaginary parts of the eigenvalues of the MAGSSM. No regularization per default")
+
+    parser.add_argument("--beta", type=float, default=1,
+        help="offset on the imaginary parts (frequencies) of the eigenvalues of the MAGSSM that are above pi if one wishes to have a stricter boundary.")
+
+    parser.add_argument("--eps-stability", type=float, default=1e-3,
+        help="Stability margin epsilon used in Progressive_SSM.forward() to clamp eigenvalue real parts "
+             "away from 0. Smaller = tighter stability constraint. (default: 1e-3)")
+
+    parser.add_argument("--dt-min", type=float, default=0.001,
+        help="Minimum timescale (dt) for SSM log-step initialization. (default: 1e-3)")
+
+    parser.add_argument("--dt-max", type=float, default=0.1,
+        help="Maximum timescale (dt) for SSM log-step initialization. (default: 0.1)")
 
     # Model Parameters
     parser.add_argument("--seq-dur",
@@ -362,6 +424,9 @@ def main():
     parser.add_argument("--amp",
                         action="store_true", default=False,
                         help="Use automatic mixed precision (AMP) during training")
+
+    parser.add_argument("--og", action="store_true", default=False,
+        help="Uses initialization of eigenvalues and B matrix from the original MagSSM paper -- B as orthogonal and linearly spaced eigenvalues")
 
     args, _ = parser.parse_known_args()
 
@@ -509,10 +574,15 @@ def main():
             nb_channels=args.nb_channels,
             n_hop=args.nhop,
             dim_state=args.nb_magssm_states,
+            og=args.og,
+            B_C_init="orthogonal" if args.og else "ones",
             encoder=encoder,
             device=device,
             chunk_duration=chunk_duration_in_frames,
             log_distributed_frequencies=args.mel,
+            eps_stability=args.eps_stability,
+            dt_min=args.dt_min,
+            dt_max=args.dt_max,
         ).to(device)
 
         total_params = sum(p.numel() for p in trainable_spectrogram.parameters() if p.requires_grad)
@@ -588,8 +658,8 @@ def main():
     # ---------------------------------------------------------------------------
     # Boucle d'entraînement
     # ---------------------------------------------------------------------------
-    stft_saving_path = Path(target_path, args.target + "_stft.png") if global_rank == 0 else None
-    magssm_saving_path = Path(target_path, args.target + "_magssm.png") if global_rank == 0 else None
+    stft_best_path   = Path(target_path, args.target + "_stft_best.png")   if global_rank == 0 else None
+    magssm_best_path = Path(target_path, args.target + "_magssm_best.png") if global_rank == 0 else None
 
     for epoch in t:
         if is_distributed:
@@ -600,12 +670,13 @@ def main():
 
         train_loss = train(
             args, trainable_spectrogram, encoder, device, train_sampler, optimizer,
-            is_distributed=is_distributed, scaler=amp_scaler, ds = args.ds
+            is_distributed=is_distributed, scaler=amp_scaler, ds=args.ds,
+            alpha=args.alpha, beta=args.beta
         )
-        valid_loss = valid(
+        valid_loss, X_valid, X_hat_valid = valid(
             args, trainable_spectrogram, encoder, device, valid_sampler,
-            is_distributed=is_distributed, use_amp=args.amp, ds = args.ds,
-            stft_saving_path=stft_saving_path, magssm_saving_path=magssm_saving_path
+            is_distributed=is_distributed, use_amp=args.amp, ds=args.ds,
+            alpha=args.alpha, beta=args.beta
         )
 
         # Scheduler et early stopping sur tous les rangs (la loss de validation est synchronisée)
@@ -617,16 +688,18 @@ def main():
 
         stop = es.step(valid_loss)
 
-        if valid_loss == es.best:
+        is_best = valid_loss == es.best
+        if is_best:
             best_epoch = epoch
 
         # Sauvegarde uniquement sur le rank 0
         if global_rank == 0:
-            if valid_loss == es.best:
-                if stft_saving_path is not None and stft_saving_path.exists():
-                    shutil.copyfile(stft_saving_path, Path(target_path, args.target + "_stft_best.png"))
-                if magssm_saving_path is not None and magssm_saving_path.exists():
-                    shutil.copyfile(magssm_saving_path, Path(target_path, args.target + "_magssm_best.png"))
+            # Sauvegarde des spectrogrammes PNG uniquement sur la meilleure époque
+            if is_best:
+                if stft_best_path is not None and X_valid is not None:
+                    save_spectrogram(X_valid, stft_best_path)
+                if magssm_best_path is not None and X_hat_valid is not None:
+                    save_spectrogram(X_hat_valid, magssm_best_path)
 
             raw_state_dict = (
                 trainable_spectrogram.module.state_dict()
