@@ -6,7 +6,7 @@
 # --- Fine-tuning / Reprise ---
 # Laisser vide pour entraînement from scratch
 MODEL=""        # ex: "/path/to/model_dir"  → active --model (fine-tuning)
-CHECKPOINT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/n_states=1nbins/512bins_alpha5e0"   # ex: "/path/to/checkpoint" → active --checkpoint (reprise)
+CHECKPOINT=""   # ex: "/path/to/checkpoint" → active --checkpoint (reprise)
 
 # --- Topologie DDP ---
 NNODES=6
@@ -22,7 +22,7 @@ RANK_NAMES=("nissan" "1" "2" "3" "4" "5")
 TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-unmix-pytorch/openunmix/train_spectrogram_parallel.py"
 
 # --- Arguments du modèle / dataset ---
-ROOT="/Data/adrien.dubois/"
+ROOT="/Data/adrien.dubois/musdb18_ds3"
 OUTPUT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/n_states=1nbins/512bins_alpha5e0"
 TARGET="vocals"
 EPOCHS=150
@@ -30,10 +30,9 @@ BATCH_SIZE=8
 NB_WORKERS=5
 SEQ_DUR=4
 CHUNK_DUR=1
-NB_MAGSSM_STATES=513
-N_FFT=1024
-N_HOP=256
-DOWNSAMPLING=3
+NB_MAGSSM_STATES=682
+N_FFT=682
+N_HOP=102
 
 # --- Régularisation L2 sur les parties imaginaires des valeurs propres ---
 ALPHA=5      # facteur multiplicatif de la loss L2 (0 = pas de régularisation)
@@ -50,3 +49,7 @@ FLAG_IS_WAV=1
 FLAG_MEL=1
 FLAG_AMP=0
 FLAG_OG=0           # initialisation originale MagSSM (B orthogonale, valeurs propres linéaires)
+FLAG_REGUL_WINDOW=0 # regularize window with bilateral double-exponential envelope (1 to enable)
+EPSILON1=0.07
+LAMBDA_COEFF_1=0.77
+LAMBDA_COEFF_2=0.85

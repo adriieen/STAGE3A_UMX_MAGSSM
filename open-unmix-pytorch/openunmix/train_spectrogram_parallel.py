@@ -428,6 +428,16 @@ def main():
     parser.add_argument("--og", action="store_true", default=False,
         help="Uses initialization of eigenvalues and B matrix from the original MagSSM paper -- B as orthogonal and linearly spaced eigenvalues")
 
+    parser.add_argument("--regularize_window", action="store_true", default=False,
+        help="Regularize the STFT window with a bilateral double-exponential envelope: "
+             "w_reg = hann * (eps1*exp(-l1*|t-N/2|) + eps2*exp(-l2*|t-N/2|))")
+    parser.add_argument("--epsilon1", type=float, default=0.07,
+        help="Weight of the fast-decay exponential (eps2 = 1 - eps1)")
+    parser.add_argument("--lambda_coeff_1", type=float, default=0.77,
+        help="Coefficient for fast exponential decay (lambda_val_1 = lambda_coeff_1 / N)")
+    parser.add_argument("--lambda_coeff_2", type=float, default=0.85,
+        help="Coefficient for slow exponential decay (lambda_val_2 = lambda_coeff_2 / N)")
+
     args, _ = parser.parse_known_args()
 
     # ---------------------------------------------------------------------------
@@ -533,7 +543,9 @@ def main():
         valid_sampler = torch.utils.data.DataLoader(valid_dataset, batch_size=1, **dataloader_kwargs)
 
     stft, _ = transforms.make_filterbanks(
-        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate
+        n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate,
+        regularize=args.regularize_window, epsilon1=args.epsilon1,
+        lambda_coeff_1=args.lambda_coeff_1, lambda_coeff_2=args.lambda_coeff_2,
     )
 
     encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
@@ -549,6 +561,10 @@ def main():
         "sample_rate": train_dataset.sample_rate,
         "nb_channels": args.nb_channels,
         "nb_magssm_states": args.nb_magssm_states,
+        "regularize_window": args.regularize_window,
+        "epsilon1": args.epsilon1,
+        "lambda_coeff_1": args.lambda_coeff_1,
+        "lambda_coeff_2": args.lambda_coeff_2,
     }
 
     if global_rank == 0:

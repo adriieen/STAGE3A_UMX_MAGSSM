@@ -22,6 +22,7 @@ FLAGS=""
 [ "$FLAG_MEL"           -eq 1 ] && FLAGS+=$'\\\n--mel \\'
 [ "$FLAG_AMP"           -eq 1 ] && FLAGS+=$'\\\n--amp \\'
 [ "$FLAG_OG"            -eq 1 ] && FLAGS+=$'\\\n--og \\'
+[ "$FLAG_REGUL_WINDOW"  -eq 1 ] && FLAGS+=$'\\\n--regularize_window --epsilon1 ${EPSILON1} --lambda_coeff_1 ${LAMBDA_COEFF_1} --lambda_coeff_2 ${LAMBDA_COEFF_2} \\'
 
 for RANK in $(seq 0 $((NNODES - 1))); do
     NAME="${RANK_NAMES[$RANK]}"
@@ -51,7 +52,6 @@ ${TRAIN_SCRIPT} \\
 --nb_magssm_states ${NB_MAGSSM_STATES} \\
 --nfft ${N_FFT} \\
 --nhop ${N_HOP} \\
---ds ${DOWNSAMPLING} \\
 --alpha ${ALPHA} \\
 --beta ${BETA} \\
 --eps-stability ${EPS_STABILITY} \\
@@ -68,6 +68,7 @@ HEREDOC
     [ "$FLAG_MEL"            -eq 1 ] && echo "--mel \\" >> "$OUTFILE"
     [ "$FLAG_AMP"            -eq 1 ] && echo "--amp \\" >> "$OUTFILE"
     [ "$FLAG_OG"             -eq 1 ] && echo "--og \\" >> "$OUTFILE"
+    [ "$FLAG_REGUL_WINDOW"   -eq 1 ] && echo "--regularize_window --epsilon1 ${EPSILON1} --lambda_coeff_1 ${LAMBDA_COEFF_1} --lambda_coeff_2 ${LAMBDA_COEFF_2} \\" >> "$OUTFILE"
 
     chmod +x "$OUTFILE"
     echo "✓ Généré : $OUTFILE (node_rank=$RANK)"
