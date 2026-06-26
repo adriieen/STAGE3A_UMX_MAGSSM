@@ -370,10 +370,15 @@ def main():
         "ex for a desired increase in output size of 1/4 ; 1/2 ; 1 the user should write --output....._factors 4 2 1 in the terminal "\
         "A standard choice is to set output_sizes = hidden_sizes[::-1] to have a reasonable nb of parameters")
 
-    parser.add_argument("--regularize_window", action="store_true", default=False, help="Regularize the window function with the exponential decaying window eps.e^(-lambda.t)")
-    parser.add_argument("--epsilon_w", type=float, default=1e-3, help="epsilon for window regularization")
-    parser.add_argument("--lambda_w", type=float, default=0.01, help="lambda for window regularization."\
-        "A typical order of magnitude is to have lambda * N_fft ~ 10 to ensure a smooth decay of the spectral response.")
+    parser.add_argument("--regularize_window", action="store_true", default=False,
+        help="Regularize the STFT window with a bilateral double-exponential envelope: "
+             "w_reg = hann * (eps1*exp(-l1*|t-N/2|) + eps2*exp(-l2*|t-N/2|))")
+    parser.add_argument("--epsilon1", type=float, default=0.07,
+        help="Weight of the fast-decay exponential (eps2 = 1 - eps1)")
+    parser.add_argument("--lambda_coeff_1", type=float, default=0.77,
+        help="Coefficient for fast exponential decay (lambda_val_1 = lambda_coeff_1 / N)")
+    parser.add_argument("--lambda_coeff_2", type=float, default=0.85,
+        help="Coefficient for slow exponential decay (lambda_val_2 = lambda_coeff_2 / N)")
 
 
 
@@ -431,7 +436,8 @@ def main():
 
     stft, _ = transforms.make_filterbanks(
         n_fft=args.nfft, n_hop=args.nhop, sample_rate=train_dataset.sample_rate,
-        regularize=args.regularize_window, epsilon=args.epsilon_w, lambda_val=args.lambda_w,
+        regularize=args.regularize_window, epsilon1=args.epsilon1,
+        lambda_coeff_1=args.lambda_coeff_1, lambda_coeff_2=args.lambda_coeff_2,
     )
 
 
@@ -449,8 +455,9 @@ def main():
         "nb_channels": args.nb_channels,
         "nb_magssm_states" : args.nb_magssm_states,
         "regularize_window": args.regularize_window,
-        "epsilon_w": args.epsilon_w,
-        "lambda_w": args.lambda_w,
+        "epsilon1": args.epsilon1,
+        "lambda_coeff_1": args.lambda_coeff_1,
+        "lambda_coeff_2": args.lambda_coeff_2,
     }
 
     with open(Path(target_path, "separator.json"), "w") as outfile:

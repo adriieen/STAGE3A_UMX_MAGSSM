@@ -75,7 +75,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Downsample musdb18 WAV dataset")
     parser.add_argument("--input", type=str, required=True, help="Path to original musdb18 WAV dataset")
     parser.add_argument("--output", type=str, required=True, help="Path for downsampled output")
-    parser.add_argument("--factor", type=int, default=4, help="Downsampling factor (default: 4)")
+    parser.add_argument("--factor", type=int, default=3, help="Downsampling factor (default: 4)")
     args = parser.parse_args()
 
     input_root = Path(args.input).expanduser().resolve()

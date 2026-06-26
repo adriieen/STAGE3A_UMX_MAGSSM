@@ -830,7 +830,10 @@ class MUSDBDataset(UnmixDataset):
             *args,
             **kwargs,
         )
-        self.sample_rate = 44100.0  # musdb is fixed sample rate
+        if self.mus.tracks:
+            self.sample_rate = float(self.mus.tracks[0].rate)
+        else:
+            self.sample_rate = 44100.0  # musdb is fixed sample rate
 
     def __getitem__(self, index):
         audio_sources = []

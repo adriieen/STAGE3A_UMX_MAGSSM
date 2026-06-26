@@ -15,32 +15,51 @@ except ImportError:
 
 def get_regularised_window(
     n_fft: int,
-    epsilon: float = 1e-3,
-    lambda_val: float = 0.01,
+    epsilon1: float = 0.07,
+    lambda_coeff_1: float = 0.77,
+    lambda_coeff_2: float = 0.85,
     device: str = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    """Build a Hann window regularised with an exponential decay.
+    """Build a Hann window regularised with a bilateral double-exponential envelope.
 
-    The returned tensor is ``hann(n_fft) + epsilon * exp(-lambda_val * t)``
-    where *t* runs from 0 to ``n_fft - 1``.  The exponential tail forces
-    energy into the causal (early) part of the window, promoting a
-    minimum-phase impulse response.
+    The returned tensor is::
+
+        w_reg = hann(n_fft) * (eps1 * exp(-l1 * |t - N/2|)
+                              + eps2 * exp(-l2 * |t - N/2|))
+
+    where ``eps2 = 1 - eps1``, ``l1 = lambda_coeff_1 / n_fft``,
+    ``l2 = lambda_coeff_2 / n_fft``, and ``|t - N/2|`` is the distance
+    to the window centre.
+
+    The two exponential terms provide independent control over the
+    fast-decay (sidelobe suppression) and slow-decay (main-lobe shape)
+    components while preserving the symmetric OLA property of the Hann
+    window.
 
     Args:
-        n_fft:       Window (and FFT) size.
-        epsilon:     Amplitude of the exponential regularisation term.
-        lambda_val:  Decay rate of the exponential (larger → faster decay).
-        device:      Torch device for the output tensor.
-        dtype:       Floating-point dtype (default ``torch.float32``).
+        n_fft:          Window (and FFT) size.
+        epsilon1:       Weight of the fast-decay exponential (eps2 = 1 - eps1).
+        lambda_coeff_1: Coefficient for the fast decay (lambda_val_1 = lambda_coeff_1 / n_fft).
+        lambda_coeff_2: Coefficient for the slow decay (lambda_val_2 = lambda_coeff_2 / n_fft).
+        device:         Torch device for the output tensor.
+        dtype:          Floating-point dtype (default ``torch.float32``).
 
     Returns:
         Tensor of shape ``(n_fft,)`` with ``requires_grad=False``.
     """
     hann = torch.hann_window(n_fft, device=device, dtype=dtype)
     t = torch.arange(n_fft, device=device, dtype=dtype)
-    reg = epsilon * torch.exp(-lambda_val * t)
-    window = hann + reg
+    t_centered = torch.abs(t - n_fft // 2)
+
+    epsilon2 = 1.0 - epsilon1
+    lambda_val_1 = lambda_coeff_1 / n_fft
+    lambda_val_2 = lambda_coeff_2 / n_fft
+
+    w_exp_rapide = epsilon1 * torch.exp(-lambda_val_1 * t_centered)
+    w_exp_lente = epsilon2 * torch.exp(-lambda_val_2 * t_centered)
+
+    window = hann * (w_exp_rapide + w_exp_lente)
     window = window.detach().requires_grad_(False)
     return window
 
@@ -52,11 +71,15 @@ def make_filterbanks(
     sample_rate=44100.0,
     method="torch",
     regularize=False,
-    epsilon=1e-3,
-    lambda_val=0.01,
+    epsilon1=0.07,
+    lambda_coeff_1=0.77,
+    lambda_coeff_2=0.85,
 ):
     if regularize:
-        window = get_regularised_window(n_fft, epsilon=epsilon, lambda_val=lambda_val)
+        window = get_regularised_window(
+            n_fft, epsilon1=epsilon1,
+            lambda_coeff_1=lambda_coeff_1, lambda_coeff_2=lambda_coeff_2,
+        )
     else:
         window = torch.hann_window(n_fft) + 1e-4
 

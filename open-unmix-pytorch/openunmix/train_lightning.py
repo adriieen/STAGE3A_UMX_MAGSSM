@@ -7,10 +7,13 @@ import json
 import sklearn.preprocessing
 import numpy as np
 import random
-from git import Repo
 import os
 import copy
 import torchaudio
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning import Trainer
+
 
 import data
 import model
@@ -22,42 +25,147 @@ import sedge_umx
 tqdm.monitor_interval = 0
 
 
-def train(args, unmix, encoder, device, train_sampler, optimizer):
-    losses = utils.AverageMeter()
-    unmix.train()
-    pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
-    for x, y in pbar:
-        pbar.set_description("Training batch")
-        x, y = x.to(device), y.to(device)
-        optimizer.zero_grad()
-        X = encoder(x)
+class UnmixLitWrapper(pl.LightningModule):
+    def __init__(self, unmix, encoder, args):
+        super().__init__()
+        self.unmix = unmix
+        self._encoder = encoder
+        self.args = args
 
-        # x(16, 2, 44100 * seq_duration = 2.6e5)
-        # X (16, 2, 2049 = nb_bins, 255 = temporal width)
+        self._encoder.eval()
+        for p in self._encoder.parameters():
+            p.requires_grad = False
 
+    def forward(self, x):
+        return self.unmix(x)
 
-        Y_hat = unmix(X)
-        Y = encoder(y)
+    def training_step(self, batch, batch_idx):
+        x, y = batch
+        X = self._encoder(x)
+        Y_hat = self.unmix(X)
+        Y = self._encoder(y)
         loss = torch.nn.functional.mse_loss(Y_hat, Y)
-        loss.backward()
-        optimizer.step()
-        losses.update(loss.item(), Y.size(1))
-        pbar.set_postfix(loss="{:.3f}".format(losses.avg))
-    return losses.avg
+
+        self.log('train_loss', loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch
+        X = self._encoder(x)
+        Y_hat = self.unmix(X)
+        Y = self._encoder(y)
+        loss = torch.nn.functional.mse_loss(Y_hat, Y)
+
+        self.log('val_loss', loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.unmix.parameters(),
+            lr=self.args.lr,
+            weight_decay=self.args.weight_decay
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            factor=self.args.lr_decay_gamma,
+            patience=self.args.lr_decay_patience,
+            cooldown=10,
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+            },
+        }
 
 
-def valid(args, unmix, encoder, device, valid_sampler):
-    losses = utils.AverageMeter()
-    unmix.eval()
-    with torch.no_grad():
-        for x, y in valid_sampler:
-            x, y = x.to(device), y.to(device)
-            X = encoder(x)
-            Y_hat = unmix(X)
-            Y = encoder(y)
-            loss = torch.nn.functional.mse_loss(Y_hat, Y)
-            losses.update(loss.item(), Y.size(1))
-        return losses.avg
+class JsonLogCallback(pl.Callback):
+    def __init__(self, target_path, args):
+        super().__init__()
+        self.target_path = target_path
+        self.args = args
+        self.train_losses = []
+        self.valid_losses = []
+        self.train_times = []
+        self.best_loss = float('inf')
+        self.best_epoch = 0
+        self.epoch_start_time = 0
+        # Si on reprend l'entraînement depuis un checkpoint, on recharge l'ancien JSON
+        if args.checkpoint:
+            json_path = Path(args.checkpoint).expanduser() / f"{args.target}.json"
+            if json_path.exists():
+                with open(json_path, "r") as f:
+                    prev = json.load(f)
+                    self.train_losses = prev.get("train_loss_history", [])
+                    self.valid_losses = prev.get("valid_loss_history", [])
+                    self.train_times = prev.get("train_time_history", [])
+                    self.best_loss = prev.get("best_loss", float('inf'))
+                    self.best_epoch = prev.get("best_epoch", 0)
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        self.epoch_start_time = time.time()
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        train_loss = trainer.callback_metrics.get("train_loss") or trainer.callback_metrics.get("train_loss_epoch")
+        if train_loss is not None:
+            self.train_losses.append(train_loss.item())
+
+        self.train_times.append(time.time() - self.epoch_start_time)
+        self._save_json(trainer, pl_module)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # Ignore la validation de sanity check avant le début de l'entraînement
+        if trainer.sanity_checking:
+            return
+        valid_loss = trainer.callback_metrics.get("val_loss")
+        is_best = False
+        if valid_loss is not None:
+            val_loss_val = valid_loss.item()
+            self.valid_losses.append(val_loss_val)
+
+            if val_loss_val < self.best_loss:
+                self.best_loss = val_loss_val
+                self.best_epoch = trainer.current_epoch
+                is_best = True
+        self._save_json(trainer, pl_module)
+
+        # Sauvegarde au format classique "pur" de l'ancien code (.chkpnt)
+        if trainer.is_global_zero and valid_loss is not None:
+            checkpoint_dict = {
+                "epoch": trainer.current_epoch + 1,
+                "state_dict": pl_module.unmix.state_dict(),
+                "best_loss": self.best_loss,
+                "optimizer": {},
+                "scheduler": {},
+            }
+            utils.save_checkpoint(
+                checkpoint_dict,
+                is_best=is_best,
+                path=self.target_path,
+                target=self.args.target,
+            )
+
+    def _save_json(self, trainer, pl_module):
+        if trainer.is_global_zero and len(self.train_losses) == len(self.valid_losses) and len(self.train_losses) > 0:
+            num_bad_epochs = 0
+            for cb in trainer.callbacks:
+                if isinstance(cb, EarlyStopping):
+                    num_bad_epochs = getattr(cb, 'wait_count', 0)
+                    break
+
+            params = {
+                "epochs_trained": trainer.current_epoch + 1,
+                "args": vars(self.args),
+                "best_loss": self.best_loss,
+                "best_epoch": self.best_epoch,
+                "train_loss_history": self.train_losses,
+                "valid_loss_history": self.valid_losses,
+                "train_time_history": self.train_times,
+                "num_bad_epochs": num_bad_epochs,
+            }
+            with open(self.target_path / f"{self.args.target}.json", "w") as outfile:
+                json.dump(params, outfile, indent=4, sort_keys=True)
 
 
 def get_statistics(args, encoder, dataset):
@@ -91,7 +199,7 @@ def get_statistics(args, encoder, dataset):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Open Unmix Trainer")
+    parser = argparse.ArgumentParser(description="Open Unmix Trainer (Lightning)")
 
     # which target do we want to train?
     parser.add_argument(
@@ -203,6 +311,9 @@ def main():
     parser.add_argument("--no-cuda", 
                         action="store_true", default=False, help="disables CUDA training"
     )
+    parser.add_argument("--amp",
+                        action="store_true", default=False, help="Use automatic mixed precision (AMP) during training"
+    )
 
     parser.add_argument("--nb_layers", type=int, default=3, help="Number of internal layers in the separation module")
 
@@ -235,10 +346,6 @@ def main():
     use_cuda = not args.no_cuda and torch.cuda.is_available()
     print("Using GPU:", use_cuda)
     dataloader_kwargs = {"num_workers": args.nb_workers, "pin_memory": True} if use_cuda else {}
-
-    # repo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    # repo = Repo(repo_dir)
-    # commit = repo.head.commit.hexsha[:7]
 
     # use jpg or npy
     torch.manual_seed(args.seed)
@@ -323,108 +430,42 @@ def main():
         total_params = sum(p.numel() for p in unmix.parameters() if p.requires_grad)
         print(f"Total number of parameters: {total_params}")
 
+    # Lightning wrappers
+    lit_model = UnmixLitWrapper(unmix, encoder, args)
 
-        # input_tensor = torch.rand((16,2,2049,255), dtype=torch.float32).to(device)
-        # torch.onnx.export(
-        #     unmix,
-        #     (input_tensor,),
-        #     "UMXEdge.onnx",
-        #     input_names=["input"]
-        # )
+    json_callback = JsonLogCallback(target_path, args)
 
-
-    optimizer = torch.optim.AdamW(unmix.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        factor=args.lr_decay_gamma,
-        patience=args.lr_decay_patience,
-        cooldown=10,
+    checkpoint_callback = ModelCheckpoint(
+        monitor='val_loss',
+        dirpath=target_path,
+        filename=f'{args.target}-best',
+        save_top_k=1,
+        mode='min',
     )
 
-    es = utils.EarlyStopping(patience=args.patience)
+    early_stop_callback = EarlyStopping(
+        monitor='val_loss',
+        patience=args.patience,
+        mode='min'
+    )
 
-    # if a checkpoint is specified: resume training
-    if args.checkpoint:
-        model_path = Path(args.checkpoint).expanduser()
-        with open(Path(model_path, args.target + ".json"), "r") as stream:
-            results = json.load(stream)
+    trainer = Trainer(
+        max_epochs=args.epochs,
+        accelerator="gpu",
+        devices=[0, 1],
+        strategy="ddp",
+        precision=16 if args.amp else 32,
+        callbacks=[checkpoint_callback, early_stop_callback, json_callback],
+    )
 
-        target_model_path = Path(model_path, args.target + ".chkpnt")
-        checkpoint = torch.load(target_model_path, map_location=device)
-        unmix.load_state_dict(checkpoint["state_dict"], strict=False)
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scheduler.load_state_dict(checkpoint["scheduler"])
-        # train for another epochs_trained
-        t = tqdm.trange(
-            results["epochs_trained"],
-            results["epochs_trained"] + args.epochs + 1,
-            disable=args.quiet,
-        )
-        train_losses = results["train_loss_history"]
-        valid_losses = results["valid_loss_history"]
-        train_times = results["train_time_history"]
-        best_epoch = results["best_epoch"]
-        es.best = results["best_loss"]
-        es.num_bad_epochs = results["num_bad_epochs"]
-    # else start optimizer from scratch
-    else:
-        t = tqdm.trange(1, args.epochs + 1, disable=args.quiet)
-        train_losses = []
-        valid_losses = []
-        train_times = []
-        best_epoch = 0
+    ckpt_path = args.checkpoint if args.checkpoint else None
 
-    for epoch in t:
-        t.set_description("Training epoch")
-        end = time.time()
-        train_loss = train(args, unmix, encoder, device, train_sampler, optimizer)
-        valid_loss = valid(args, unmix, encoder, device, valid_sampler)
-        scheduler.step(valid_loss)
-        train_losses.append(train_loss)
-        valid_losses.append(valid_loss)
-
-        t.set_postfix(train_loss=train_loss, val_loss=valid_loss)
-
-        stop = es.step(valid_loss)
-
-        if valid_loss == es.best:
-            best_epoch = epoch
-
-        utils.save_checkpoint(
-            {
-                "epoch": epoch + 1,
-                "state_dict": unmix.state_dict(),
-                "best_loss": es.best,
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-            },
-            is_best=valid_loss == es.best,
-            path=target_path,
-            target=args.target,
-        )
-
-        # save params
-        params = {
-            "epochs_trained": epoch,
-            "args": vars(args),
-            "best_loss": es.best,
-            "best_epoch": best_epoch,
-            "train_loss_history": train_losses,
-            "valid_loss_history": valid_losses,
-            "train_time_history": train_times,
-            "num_bad_epochs": es.num_bad_epochs,
-            # "commit": commit,
-        }
-
-        with open(Path(target_path, args.target + ".json"), "w") as outfile:
-            outfile.write(json.dumps(params, indent=4, sort_keys=True))
-
-        train_times.append(time.time() - end)
-
-        if stop:
-            print("Apply Early Stopping")
-            break
+    trainer.fit(
+        model=lit_model,
+        train_dataloaders=train_sampler,
+        val_dataloaders=valid_sampler,
+        ckpt_path=ckpt_path,
+    )
 
 
 if __name__ == "__main__":
