@@ -353,8 +353,16 @@ def main():
         target_model_path = Path(model_path, args.target + ".chkpnt")
         checkpoint = torch.load(target_model_path, map_location=device)
         unmix.load_state_dict(checkpoint["state_dict"], strict=False)
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scheduler.load_state_dict(checkpoint["scheduler"])
+        
+        if checkpoint.get("optimizer") and "param_groups" in checkpoint["optimizer"]:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        else:
+            print("Warning: Optimizer state not found in checkpoint. Starting optimizer from scratch.")
+            
+        if checkpoint.get("scheduler") and len(checkpoint["scheduler"]) > 0:
+            scheduler.load_state_dict(checkpoint["scheduler"])
+        else:
+            print("Warning: Scheduler state not found in checkpoint. Starting scheduler from scratch.")
         # train for another epochs_trained
         t = tqdm.trange(
             results["epochs_trained"],

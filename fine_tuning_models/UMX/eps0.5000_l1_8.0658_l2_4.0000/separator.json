@@ -1,0 +1,10 @@
+{
+    "epsilon1": 0.5,
+    "lambda_coeff_1": 8.0658,
+    "lambda_coeff_2": 4.0,
+    "nb_channels": 2,
+    "nfft": 683,
+    "nhop": 34,
+    "regularize_window": true,
+    "sample_rate": 14700.0
+}

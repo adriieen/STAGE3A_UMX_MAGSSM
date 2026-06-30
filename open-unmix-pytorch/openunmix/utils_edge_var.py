@@ -237,33 +237,57 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
                 encoder = torch.nn.Sequential(stft, ComplexNorm(mono=results["args"]["nb_channels"] == 1)).to(device)
 
 
-                models[target] = sedge_mask.SedgeMask(
-                    nb_bins = results["args"]["nfft"] // 2 + 1,
-                    nb_channels=results["args"]["nb_channels"],
-                    hidden_size=results["args"]["hidden_size"],
-                    # max_bin=state["input_mean"].shape[0],
-                    nb_layers = 3 if "nb_layers" not in results["args"].keys() else results["args"]["nb_layers"],
+                if "ssm_model" in results["args"] or "freeze_backbone" in results["args"]:
+                    import magssm_umx
+                    models[target] = magssm_umx.MagSSM_OpenUnmix(
+                        nb_bins = results["args"]["nfft"] // 2 + 1,
+                        nb_channels=results["args"]["nb_channels"],
+                        hidden_size=results["args"]["hidden_size"],
+                        nb_layers = 3 if "nb_layers" not in results["args"].keys() else results["args"]["nb_layers"],
+                        unidirectional = results["args"].get("unidirectional", False),
+                        dim_state = results["args"]["nb_magssm_states"],
+                        d_out = results["args"]["nb_magssm_states"] if results["args"]["d_out"] is None 
+                            else results["args"]["d_out"],
+                        n_fft = results["args"]["nfft"],
+                        n_hop = results["args"]["nhop"],
+                        device = device,
+                        chunk_duration = int(results["args"]["chunk_dur"]*results["args"]["sample_rate"]),
+                        log_distributed_frequencies = results["args"].get("mel", False),
+                        use_layernorm = results["args"].get("use_layernorm", False),
+                        og = results["args"].get("og", False),
+                        eps_stability = results["args"].get("eps_stability", 1e-3),
+                        dt_min = results["args"].get("dt_min", 0.001),
+                        dt_max = results["args"].get("dt_max", 0.1),
+                        encoder = encoder
+                    )
+                else:
+                    models[target] = sedge_mask.SedgeMask(
+                        nb_bins = results["args"]["nfft"] // 2 + 1,
+                        nb_channels=results["args"]["nb_channels"],
+                        hidden_size=results["args"]["hidden_size"],
+                        # max_bin=state["input_mean"].shape[0],
+                        nb_layers = 3 if "nb_layers" not in results["args"].keys() else results["args"]["nb_layers"],
 
-                    use_edge = results["args"]["use_edge"],
-                    unidirectional = results["args"]["unidirectional"],
-                    # progressive = results["args"]["progressive"],
-                    chunk_duration= int(results["args"]["chunk_dur"]*results["args"]["sample_rate"]),
+                        use_edge = results["args"]["use_edge"],
+                        unidirectional = results["args"]["unidirectional"],
+                        # progressive = results["args"]["progressive"],
+                        chunk_duration= int(results["args"]["chunk_dur"]*results["args"]["sample_rate"]),
 
-                    hidden_size_factors = None if "hidden_size_factors" not in results["args"].keys() 
-                        else results["args"]["hidden_size_factors"],
-                    output_size_factors = None if "output_size_factors" not in results["args"].keys() 
-                        else results["args"]["output_size_factors"],
+                        hidden_size_factors = None if "hidden_size_factors" not in results["args"].keys() 
+                            else results["args"]["hidden_size_factors"],
+                        output_size_factors = None if "output_size_factors" not in results["args"].keys() 
+                            else results["args"]["output_size_factors"],
 
-                    n_fft = results["args"]["nfft"],
-                    n_hop = results["args"]["nhop"],
-                    dim_state = results["args"]["nb_magssm_states"],
-                    d_out = results["args"]["nb_magssm_states"] if results["args"]["d_out"] is None 
-                        else results["args"]["d_out"],
-                    log_distributed_frequencies=results["args"]["mel"],
+                        n_fft = results["args"]["nfft"],
+                        n_hop = results["args"]["nhop"],
+                        dim_state = results["args"]["nb_magssm_states"],
+                        d_out = results["args"]["nb_magssm_states"] if results["args"]["d_out"] is None 
+                            else results["args"]["d_out"],
+                        log_distributed_frequencies=results["args"]["mel"],
 
-                    encoder = encoder,
-                    device = device
-                )
+                        encoder = encoder,
+                        device = device
+                    )
 
             if pretrained:
                 models[target].load_state_dict(state, strict=False)
