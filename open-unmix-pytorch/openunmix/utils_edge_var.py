@@ -246,7 +246,7 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
                         nb_layers = 3 if "nb_layers" not in results["args"].keys() else results["args"]["nb_layers"],
                         unidirectional = results["args"].get("unidirectional", False),
                         dim_state = results["args"]["nb_magssm_states"],
-                        d_out = results["args"]["nb_magssm_states"] if results["args"]["d_out"] is None 
+                        d_out = (results["args"]["nfft"] // 2 + 1) if results["args"].get("d_out") is None 
                             else results["args"]["d_out"],
                         n_fft = results["args"]["nfft"],
                         n_hop = results["args"]["nhop"],

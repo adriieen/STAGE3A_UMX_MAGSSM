@@ -349,7 +349,7 @@ def main():
     nhop = ssm_conf["nhop"]
     nb_magssm_states = ssm_conf["nb_magssm_states"]
     d_out = ssm_conf["d_out"]
-    d_out = nb_magssm_states if d_out is None else d_out
+    d_out = (nfft // 2 + 1) if d_out is None else d_out
     
     og = ssm_conf["og"]
     eps_stability = ssm_conf["eps_stability"]
