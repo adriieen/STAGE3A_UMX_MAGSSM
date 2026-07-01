@@ -70,7 +70,13 @@ for i in "\${!COUPLES_CONFIGS[@]}"; do
 
     mkdir -p "\${OUTPUT_DIR}"
 
-    torchrun \\
+    # Configure environment for conda env, ffmpeg/ffprobe access, and NCCL networking
+    export PATH="/users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin:\$PATH"
+    export NCCL_DEBUG=INFO
+    export NCCL_SOCKET_IFNAME=enp,eno,ens,eth,em
+    export GLOO_SOCKET_IFNAME=enp,eno,ens,eth,em
+
+    /users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin/torchrun \\
     --nnodes=${NNODES} \\
     --nproc_per_node=${NPROC_PER_NODE} \\
     --node_rank=${RANK} \\
@@ -96,6 +102,11 @@ HEREDOC
     else
         echo "    --no-freeze-backbone \\" >> "$OUTFILE"
         echo "    --lr-backbone ${LR_BACKBONE} \\" >> "$OUTFILE"
+    fi
+
+    # Option Dataset WAV
+    if [ "${FLAG_IS_WAV:-0}" -eq 1 ]; then
+        echo "    --is-wav \\" >> "$OUTFILE"
     fi
 
     # Terminer l'appel de commande

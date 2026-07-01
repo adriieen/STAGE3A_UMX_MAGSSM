@@ -1,0 +1,11 @@
+{
+    "epsilon1": 0.07,
+    "lambda_coeff_1": 0.77,
+    "lambda_coeff_2": 0.85,
+    "nb_channels": 2,
+    "nb_magssm_states": 682,
+    "nfft": 682,
+    "nhop": 34,
+    "regularize_window": false,
+    "sample_rate": 14700.0
+}

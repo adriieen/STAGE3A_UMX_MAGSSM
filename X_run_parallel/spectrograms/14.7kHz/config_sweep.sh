@@ -25,7 +25,7 @@ TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-u
 ROOT="/Data/adrien.dubois/musdb18_ds3"
 OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/regularized_window_double_exp/NFFT=NSTATES=682"
 TARGET="vocals"
-EPOCHS=150
+EPOCHS=60
 BATCH_SIZE=8
 NB_WORKERS=5
 SEQ_DUR=4
@@ -55,13 +55,13 @@ FLAG_OG=1           # initialisation originale MagSSM
 # ─────────────────────────────────────────────────────────────────────
 WINDOW_CONFIGS=(
     # === Baseline : pas de régularisation ===
-    "none"
+    # "none"
 
     # === Configurations à balayer ===
-    
-
-    "0.2      2.1694   1"       # -45dB
-    "0.0530   0.4980   0.4365" # -56dB
-    "0.1580   0.1796    0.2572"  # -61dB
-    "0.1055   0.1000   0.1291" # -67dB
+    "0.5000   4.7027   4.0000" # -30dB
+    # "0.0500   4.0000   2.9419 " #-35dB
+    # "0.2      2.1694   1"       # -45dB
+    # "0.0530   0.4980   0.4365" # -56dB
+#     "0.1580   0.1796    0.2572"  # -61dB
+#     "0.1055   0.1000   0.1291" # -67dB
 )

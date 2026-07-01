@@ -23,11 +23,14 @@ OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs
 TARGET="vocals"
 
 # --- Hyperparamètres d'entraînement ---
-EPOCHS=1000
-BATCH_SIZE=20
-NB_WORKERS=10
-SEQ_DUR=6.0
-CHUNK_DUR=6.0
+EPOCHS=50
+BATCH_SIZE=8
+NB_WORKERS=2
+SEQ_DUR=4
+CHUNK_DUR=1
+
+# --- Dataset type ---
+FLAG_IS_WAV=1
 
 # --- Scénario de Fine-Tuning ---
 # 1 = Scénario A (Freeze backbone, entraîne SSM uniquement)
@@ -41,6 +44,15 @@ LR_BACKBONE=1e-5
 # Format : "dossier_openunmix dossier_spectrogramme_ssm"
 # ─────────────────────────────────────────────────────────────────────────────
 COUPLES_CONFIGS=(
-    "/home/adubois/openunmix/OpenUnmix/outputs/regul_window_sweep/-20-->-40/eps0.1000_l1_4.0000_l2_1.7152 /home/adubois/openunmix/OpenUnmix/outputs/trainable_spectograms/14.7kHz/regularized_window_double_exp/NFFT=NSTATES=682/eps0.1000_l1_4.0000_l2_1.7152"
+
+
+    # -35dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.0500_l1_4.0000_l2_2.9419"
+
+    #-40dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.1000_l1_4.0000_l2_1.7152"
+    
+    #-45dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.2_l1_2.1694_l2_1"
     # Ajoutez d'autres lignes ici au besoin
 )
