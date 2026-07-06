@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  CONFIG SWEEP DISTRIBUÉ (DDP) POUR LE FINE-TUNING
+#  CONFIG SWEEP DISTRIBUÉ (DDP) POUR CONTINUER LE FINE-TUNING
 #  Modifier ce fichier pour configurer les machines et la liste de modèles.
-#  Puis lancer generate_ranks_sweep_parallel.sh pour régénérer les lanceurs.
+#  Puis lancer generate_ranks_continue_parallel.sh pour générer les lanceurs.
 # ============================================================================
 
 # --- Topologie DDP (6 machines) ---
@@ -23,7 +23,10 @@ OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs
 TARGET="vocals"
 
 # --- Hyperparamètres d'entraînement ---
-EPOCHS=50
+# ATTENTION : 'EPOCHS' représente ici le nombre d'époques SUPPLÉMENTAIRES à effectuer.
+# Par exemple, si l'entraînement a été interrompu à l'époque 20 et que vous souhaitez
+# atteindre un total de 40 époques, mettez EPOCHS=20.
+EPOCHS=21
 BATCH_SIZE=8
 NB_WORKERS=2
 SEQ_DUR=4
@@ -40,11 +43,14 @@ LR=0.001
 LR_BACKBONE=1e-5
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Liste des couples de modèles (BACKBONE_DIR SSM_DIR)
+# Liste des couples de modèles (BACKBONE_DIR SSM_DIR) dont on poursuit le training.
+# Le script déterminera automatiquement le dossier de checkpoints associés dans OUTPUT_BASE.
 # Format : "dossier_openunmix dossier_spectrogramme_ssm"
 # ─────────────────────────────────────────────────────────────────────────────
 COUPLES_CONFIGS=(
 
+    # -30dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.5000_l1_4.7027_l2_4.0000"
 
     # -35dB
     "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.0500_l1_4.0000_l2_2.9419"
@@ -54,5 +60,4 @@ COUPLES_CONFIGS=(
     
     #-45dB
     "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.2_l1_2.1694_l2_1"
-    # Ajoutez d'autres lignes ici au besoin
 )

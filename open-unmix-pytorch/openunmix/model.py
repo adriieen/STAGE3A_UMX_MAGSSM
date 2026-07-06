@@ -145,7 +145,17 @@ class OpenUnmix(nn.Module):
         x = torch.tanh(x)
 
         # apply 3-layers of stacked LSTM
-        lstm_out = self.lstm(x)
+        if not x.is_contiguous():
+            x = x.contiguous()
+        if x.shape[0] >= 65536:
+            prev_enabled = torch.backends.cudnn.enabled
+            torch.backends.cudnn.enabled = False
+            try:
+                lstm_out = self.lstm(x)
+            finally:
+                torch.backends.cudnn.enabled = prev_enabled
+        else:
+            lstm_out = self.lstm(x)
 
         # lstm skip connection
         x = torch.cat([x, lstm_out[0]], -1)

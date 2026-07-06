@@ -204,7 +204,18 @@ class MagSSM_OpenUnmix(nn.Module):
         x = torch.tanh(x)
 
         # Run Bidirectional/Unidirectional LSTM
-        lstm_out, _ = self.lstm(x)
+        if not x.is_contiguous():
+            x = x.contiguous()
+
+        if x.shape[0] >= 65536:
+            prev_enabled = torch.backends.cudnn.enabled
+            torch.backends.cudnn.enabled = False
+            try:
+                lstm_out, _ = self.lstm(x)
+            finally:
+                torch.backends.cudnn.enabled = prev_enabled
+        else:
+            lstm_out, _ = self.lstm(x)
 
         # Skip connection
         x = torch.cat([x, lstm_out], -1)

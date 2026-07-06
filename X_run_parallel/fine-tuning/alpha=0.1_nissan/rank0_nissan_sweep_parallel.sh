@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Script de sweep DDP Fine-Tuning pour le noeud 2 (2)
+# Script de sweep DDP Fine-Tuning pour le noeud 0 (nissan)
 
 set -euo pipefail
 
 # Couples de modèles à balayer
 COUPLES_CONFIGS=(
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.0500_l1_4.0000_l2_2.9419"
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.1000_l1_4.0000_l2_1.7152"
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.2_l1_2.1694_l2_1"
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.5000_l1_4.7027_l2_4.0000_ssm_eps0.5000_l1_4.7027_l2_4.0000"
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.0500_l1_4.0000_l2_2.9419_ssm_eps0.0500_l1_4.0000_l2_2.9419"
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.1000_l1_4.0000_l2_1.7152_ssm_eps0.1000_l1_4.0000_l2_1.7152"
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.2_l1_2.1694_l2_1_ssm_eps0.2_l1_2.1694_l2_1"
 )
 
 echo "============================================================"
-echo "  Début du sweep Fine-Tuning DDP — Noeud 2 (2)"
+echo "  Début du sweep Fine-Tuning DDP — Noeud 0 (nissan)"
 echo "  Total couples de modèles : ${#COUPLES_CONFIGS[@]}"
 echo "============================================================"
 
@@ -26,7 +27,7 @@ for i in "${!COUPLES_CONFIGS[@]}"; do
     ssm_name=$(basename "$SSM_DIR")
     
     RUN_NAME="backbone_${backbone_name}_ssm_${ssm_name}"
-    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/${RUN_NAME}"
+    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/JOINT_OPTIMIZATION_parallel_sweep/${RUN_NAME}"
 
     echo ""
     echo "────────────────────────────────────────────────────"
@@ -47,7 +48,7 @@ for i in "${!COUPLES_CONFIGS[@]}"; do
     /users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin/torchrun \
     --nnodes=6 \
     --nproc_per_node=1 \
-    --node_rank=2 \
+    --node_rank=0 \
     --master_addr="129.104.252.76" \
     --master_port=12356 \
     /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-unmix-pytorch/openunmix/train_magssm_parallel.py \
@@ -56,13 +57,14 @@ for i in "${!COUPLES_CONFIGS[@]}"; do
     --target "vocals" \
     --model "${BACKBONE_DIR}" \
     --ssm-model "${SSM_DIR}" \
-    --epochs 50 \
+    --epochs 40 \
     --batch-size 8 \
     --nb-workers 2 \
     --seq-dur 4 \
     --chunk-dur 1 \
     --lr 0.001 \
-    --freeze-backbone \
+    --no-freeze-backbone \
+    --lr-backbone 1e-5 \
     --is-wav \
     --amp
 
@@ -70,5 +72,5 @@ for i in "${!COUPLES_CONFIGS[@]}"; do
 done
 
 echo "============================================================"
-echo "  Sweep Fine-Tuning DDP terminé sur le noeud 2 !"
+echo "  Sweep Fine-Tuning DDP terminé sur le noeud 0 !"
 echo "============================================================"

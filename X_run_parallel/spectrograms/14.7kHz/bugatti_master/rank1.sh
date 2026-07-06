@@ -1,0 +1,25 @@
+torchrun \
+--nnodes=6 \
+--nproc_per_node=1 \
+--node_rank=1 \
+--master_addr="129.104.252.65" \
+--master_port=12355 \
+/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-unmix-pytorch/openunmix/train_spectrogram_parallel.py \
+--root /Data/adrien.dubois/musdb18_ds3 \
+--output /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/n_states=1nbins/512bins_alpha5e0 \
+--target vocals \
+--epochs 150 \
+--batch-size 8 \
+--nb-workers 5 \
+--seq-dur 4 \
+--chunk-dur 1 \
+--nb_magssm_states 682 \
+--nfft 682 \
+--nhop 102 \
+--alpha 5 \
+--beta 1 \
+--eps-stability 0 \
+--dt-min 0.001 \
+--dt-max 0.1 \
+--is-wav \
+--mel \

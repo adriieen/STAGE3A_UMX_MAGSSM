@@ -261,7 +261,17 @@ class SedgeMask(nn.Module):
             sequence_out = self.sedge(x)
         
         else :
-            sequence_out, _ = self.lstm(x)  # LSTM renvoie (output, (h_n, c_n)) — on garde seulement output
+            if not x.is_contiguous():
+                x = x.contiguous()
+            if x.shape[0] >= 65536:
+                prev_enabled = torch.backends.cudnn.enabled
+                torch.backends.cudnn.enabled = False
+                try:
+                    sequence_out, _ = self.lstm(x)
+                finally:
+                    torch.backends.cudnn.enabled = prev_enabled
+            else:
+                sequence_out, _ = self.lstm(x)  # LSTM renvoie (output, (h_n, c_n)) — on garde seulement output
 
 
         x = torch.cat([x, sequence_out], -1)
