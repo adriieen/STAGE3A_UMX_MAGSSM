@@ -24,8 +24,12 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+except ImportError:
+    go = None
+    make_subplots = None
 
 # ---------------------------------------------------------------------------
 # Chargement de l'environnement
@@ -101,14 +105,16 @@ def inspect_parameters(state_dict):
 def diagnose_lambda(model):
     section("DIAGNOSTIC SSM : VALEURS PROPRES DISCRÉTISÉES (Lambda_bar)")
     
-    from model_edge.ssm_bis import Progressive_SSM
-    from model_edge.ssm_bis import discretize_zoh, as_complex
+    try:
+        from model_edge.ssm import discretize_zoh, as_complex
+    except ImportError:
+        from model_edge.ssm_bis import discretize_zoh, as_complex
 
     ssm_modules = [(name, m) for name, m in model.named_modules()
-                   if isinstance(m, Progressive_SSM)]
+                   if m.__class__.__name__ in ["SSM", "Progressive_SSM"]]
 
     if not ssm_modules:
-        print("  Aucun module Progressive_SSM trouvé dans le modèle.")
+        print("  Aucun module SSM ou Progressive_SSM trouvé dans le modèle.")
         return
 
     for name, ssm in ssm_modules:
@@ -169,6 +175,10 @@ def plot_lambda_distribution(model, save_path="./eigenvalues_trained.html"):
         model.magssm_encoder.mimo.seq.log_step  [N]
         model.magssm_encoder.mimo.seq.step_scale  (scalaire)
     """
+    if go is None:
+        print("  ⚠ plot_lambda_distribution : Plotly n'est pas installé, le tracé est ignoré.")
+        return
+
     # Forcer extension .html si l'utilisateur passe .png
     save_path = str(save_path)
     if save_path.endswith(".png"):
@@ -519,7 +529,7 @@ def main():
         print(f"  Clés inattendues ({len(unexpected)}) : {unexpected[:5]}...")
 
     # 2. Diagnostic Lambda_bar + plot distribution
-    # diagnose_lambda(unmix)
+    diagnose_lambda(unmix)
     plot_lambda_distribution(unmix, save_path="./eigenvalues_trained.png")
 
     # 3. Forward pass avec hooks

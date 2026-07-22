@@ -24,6 +24,12 @@ class Trainable_spectrogram(nn.Module):
         eps_stability: float = 1e-3,
         dt_min: float = 0.001,
         dt_max: float = 0.1,
+        re_lower: float = None,
+        re_upper: float = None,
+        ensure_stability: str = 'abs',
+        sigmoid_scale: float = 1.0,
+        complex_spectrogram = False,
+        structured_initialisation = False
     ):
         super(Trainable_spectrogram, self).__init__()
         self.encoder = encoder
@@ -45,8 +51,14 @@ class Trainable_spectrogram(nn.Module):
             eps_stability = eps_stability,
             dt_min = dt_min,
             dt_max = dt_max,
-              
+            re_lower = re_lower,
+            re_upper = re_upper,
+            ensure_stability = ensure_stability,
+            sigmoid_scale = sigmoid_scale,
+            structured_initialisation = structured_initialisation 
         ).to(device)
+
+        self.complex_spectrogram = complex_spectrogram
 
         # self.conv_downsample = nn.Sequential(
         #     # Couche 1 : (B, 1,  T_ssm,   nb_bins) → (B, 8,  T_ssm/2, nb_bins)
@@ -94,7 +106,11 @@ class Trainable_spectrogram(nn.Module):
                     raise ValueError('Encoder should not be none')
 
 
-        _ , _, _, T = X.data.shape
+        if self.complex_spectrogram:
+            _ , _, _, T, _ = X.data.shape
+        
+        else:
+             _ , _, _, T = X.data.shape
 
         # Audio enters the pipeline with format (B, 2, L)
         # print("Spectrogram Module input shape : expects (B,2,L)", x.shape)
@@ -104,16 +120,23 @@ class Trainable_spectrogram(nn.Module):
         x_left, x_right = self.magssm_encoder(x_left), self.magssm_encoder(x_right) #( B, T, d_out ) * 2  
 
 
-        x = torch.cat((x_left[:,None,...], x_right[:,None, ...]), dim=1) # B, 2, T, d_out
+        x = torch.cat((x_left[:,None,...], x_right[:,None, ...]), dim=1) # B, 2, T, d_out ; torch.complex32
 
-        x = torch.abs(x)
+        if not self.complex_spectrogram:
+            x = torch.abs(x)
 
-        # print("Spectrogram Module output shape : expects (B,2,T,d_out)", x.shape)
+        else:
+            x_re = x.real
+            x_im = x.imag
+            x= torch.cat((x_re[...,None], x_im[...,None]), dim=-1) # B,2,T,d_out,2 ; torch.float16
 
-        x = x.permute(0,1,3,2) # B, C, F, T like standard STFT.
 
-        x = x[...,:T]
+        # print("Spectrogram Module output shape : expects (B,2 ,T,d_out,2)", x.shape)
 
-        nb_samples, nb_channels, nb_bins, nb_frames= x.data.shape
+        x = x.permute(0,1,3,2,4) # B, C, F, T, 2 like standard STFT.
+
+        x = x[...,-T:,:]
+
+        nb_samples, nb_channels, nb_bins, nb_frames, _ = x.data.shape
 
         return(x)

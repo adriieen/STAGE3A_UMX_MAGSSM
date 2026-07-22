@@ -31,10 +31,10 @@ def make_linear_eigenvalues(N, symmetric = True):
             N  complex eigenvalues
     """
     if symmetric:
-        Lambda = -0.5 + 1j * np.arange(-N//2, N//2)
+        Lambda = -1/2 + 1j * np.arange(-N//2, N//2)
     else:
         # Lambda = -0.5 + 1j * np.arange(N)
-        Lambda = -0.5 + 1j * np.linspace(0,N//2,N)
+        Lambda = -1/2 + 1j * np.linspace(0,N//2,N)
 
     lambda_real = np.expand_dims(Lambda.real, axis=1)
     lambda_imag = np.expand_dims(Lambda.imag, axis=1)
@@ -43,11 +43,38 @@ def make_linear_eigenvalues(N, symmetric = True):
     return Lambda
 
 
+def make_structured_eigenvalues(N_states, N_bins):
+    """ Create linearly spaced states with pre-placed imaginary parts
+    """
+
+    # Lambda = -0.5 + 1j * np.arange(N)
+
+    model_rank = N_states // N_bins
+
+    targets = np.linspace(0,np.pi, N_bins)
+
+    imaginary_parts = np.zeros(int(model_rank * N_bins))
+    for i in range(N_bins):
+        for j in range(model_rank):
+            imaginary_parts[model_rank*i+j] = targets[i] + np.random.normal(0, np.pi/N_bins/3)
+    
+    remaining = np.linspace(0, np.pi, N_states - len(imaginary_parts))
+    imaginary_parts = np.concatenate((imaginary_parts, remaining))
+
+
+    Lambda = -1/2 + 1j * imaginary_parts
+
+    lambda_real = np.expand_dims(Lambda.real, axis=1)
+    lambda_imag = np.expand_dims(Lambda.imag, axis=1)
+    Lambda = np.concatenate((lambda_real, lambda_imag), axis=1)
+    Lambda = torch.tensor(Lambda, dtype=torch.float)
+    return Lambda
+
 
 def make_spectrograms_eigenvalues(N, log_distributed_frequencies= True):
  
     # 1/sigma ~ nb of frames that an excitation lasts : depends on sample rate --> caracteristic time tau =  (1/sigma) / samplerate 
-    sigma = - torch.ones(N) / 5000
+    sigma = - torch.ones(N) / 400
 
     if not log_distributed_frequencies:
         omega = torch.linspace(0,torch.pi, N)

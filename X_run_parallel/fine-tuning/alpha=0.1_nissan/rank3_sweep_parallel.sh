@@ -5,10 +5,7 @@ set -euo pipefail
 
 # Couples de modèles à balayer
 COUPLES_CONFIGS=(
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.5000_l1_4.7027_l2_4.0000_ssm_eps0.5000_l1_4.7027_l2_4.0000"
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.0500_l1_4.0000_l2_2.9419_ssm_eps0.0500_l1_4.0000_l2_2.9419"
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.1000_l1_4.0000_l2_1.7152_ssm_eps0.1000_l1_4.0000_l2_1.7152"
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.2_l1_2.1694_l2_1_ssm_eps0.2_l1_2.1694_l2_1"
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/bilstm_classic /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/alpha=0.1/baseline_no_regul"
 )
 
 echo "============================================================"
@@ -27,7 +24,7 @@ for i in "${!COUPLES_CONFIGS[@]}"; do
     ssm_name=$(basename "$SSM_DIR")
     
     RUN_NAME="backbone_${backbone_name}_ssm_${ssm_name}"
-    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/JOINT_OPTIMIZATION_parallel_sweep/${RUN_NAME}"
+    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0.1/separator_frozen/${RUN_NAME}"
 
     echo ""
     echo "────────────────────────────────────────────────────"
@@ -63,8 +60,7 @@ for i in "${!COUPLES_CONFIGS[@]}"; do
     --seq-dur 4 \
     --chunk-dur 1 \
     --lr 0.001 \
-    --no-freeze-backbone \
-    --lr-backbone 1e-5 \
+    --freeze-backbone \
     --is-wav \
     --amp
 

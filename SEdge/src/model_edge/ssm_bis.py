@@ -36,9 +36,10 @@ def discretize_zoh(Lambda, B, B_bias, Delta, bias):
     else:
         B_concat = B
     Lambda_bar = torch.exp(Lambda * Delta)
-    # stabilized : Lambda→0, (exp(L*Δ)-1)/L → Δ : taylor order 1
-    safe_Lambda = torch.where(Lambda.abs() < 1e-6, torch.ones_like(Lambda), Lambda)
-    B_bar = ((Lambda_bar - 1) / safe_Lambda)[..., None] * B_concat
+    # # stabilized : Lambda→0, (exp(L*Δ)-1)/L → Δ : taylor order 1
+    # safe_Lambda = torch.where(Lambda.abs() < 1e-6, torch.ones_like(Lambda), Lambda)
+    # B_bar = ((Lambda_bar - 1) / safe_Lambda)[..., None] * B_concat
+    B_bar = ((Lambda_bar - 1)/Lambda)[..., None] * B_concat
     return Lambda_bar, B_bar
 
 class SSM(torch.nn.Module):
@@ -331,7 +332,10 @@ class Progressive_SSM(torch.nn.Module):
                  subsampling_factor = 1,
                  log_distributed_frequencies= False,
                  samplerate = 44100.0,
-                 eps_stability: float = 1e-3
+                 eps_stability: float = 1e-3,
+                 re_lower: float = None,
+                 re_upper: float = None,
+                 sigmoid_scale: float = 1.0,
                  ): 
         """The Modified S5 SSM
         Args:
@@ -344,6 +348,10 @@ class Progressive_SSM(torch.nn.Module):
                                     initializing log_step
             step_scale:  (float32): allows for changing the step size, e.g. after training
                                     on a different resolution for the speech commands benchmark
+            re_lower:    (float32): lower bound for Re(Lambda)*step product when using
+                                    ensure_stability='sigmoid_interval' (e.g. -10**(-2.5))
+            re_upper:    (float32): upper bound for Re(Lambda)*step product when using
+                                    ensure_stability='sigmoid_interval' (e.g. -10**(-4.5))
         """
         super().__init__()
         self.symmetric = symmetric
@@ -357,8 +365,6 @@ class Progressive_SSM(torch.nn.Module):
             #initializing the lambdas with the structure specified in init.
             Lambda = Lambda / torch.exp(self.log_step)[:, None]
 
-        self.Lambda = torch.nn.Parameter(Lambda)
-
         self.discretize = discretize_zoh
 
         self.input_bias = input_bias
@@ -371,6 +377,30 @@ class Progressive_SSM(torch.nn.Module):
         self.subsampling_factor = subsampling_factor
         self.samplerate = samplerate
         self.eps_stability = eps_stability
+        self.sigmoid_scale = sigmoid_scale
+
+        # --- Sigmoid interval reparametrisation ---
+        if ensure_stability == 'sigmoid_interval':
+            assert re_lower is not None and re_upper is not None, \
+                "re_lower and re_upper must be provided when ensure_stability='sigmoid_interval'"
+            assert re_lower < re_upper < 0, \
+                f"Need re_lower < re_upper < 0, got re_lower={re_lower}, re_upper={re_upper}"
+            # Store bounds as non-learnable buffers
+            self.register_buffer('re_lower', torch.tensor(re_lower, dtype=torch.float32))
+            self.register_buffer('re_upper', torch.tensor(re_upper, dtype=torch.float32))
+
+            # Reparametrize Lambda[:, 0] so that sigmoid(S * Lambda_raw) maps to [re_lower, re_upper]
+            # for the product sigma_i * delta_i. We use S = sigmoid_scale to control the learning speed.
+            step_init = self.step_scale * torch.exp(self.log_step)
+            initial_product = (Lambda[:, 0] * step_init).clamp(min=re_lower, max=re_upper)
+            # Inverse sigmoid (logit) to find the raw parameter
+            t = (initial_product - re_lower) / (re_upper - re_lower)  # in (0, 1)
+            t = t.clamp(1e-6, 1 - 1e-6)  # numerical safety for logit
+            # Standard logit divided by S = sigmoid_scale to match the scaling in forward
+            Lambda_raw_real = torch.log(t / (1 - t)) / self.sigmoid_scale
+            Lambda[:, 0] = Lambda_raw_real
+
+        self.Lambda = torch.nn.Parameter(Lambda)
 
         assert chunk_duration > subsampling_factor, f"Chunk duration ({chunk_duration}) must be greater than the downsampling factor ({subsampling_factor})"
 
@@ -571,19 +601,30 @@ class Progressive_SSM(torch.nn.Module):
 
         step = self.step_scale * torch.exp(self.log_step)
 
-        eps_stability = self.eps_stability / torch.min(step)
+        if self.ensure_stability == 'sigmoid_interval':
+            # --- Differentiable reparametrisation with internal scaling ---
+            # We use an internal scaling factor of S = self.sigmoid_scale to translate AdamW's updates
+            # into physically significant but stable updates.
+            width = self.re_upper - self.re_lower
+            product = self.re_lower + width * torch.sigmoid(self.sigmoid_scale * self.Lambda[:, 0])
+            # product = Re(Lambda_c) * step, guaranteed in [re_lower, re_upper]
+            effective_real = product / step
+            # Build complex Lambda_c with constrained real part and original imaginary part
+            Lambda_c = torch.complex(effective_real, self.Lambda[:, 1])
+        else:
+            eps_stability = self.eps_stability / torch.min(step)
 
-        with torch.no_grad():
-            if self.ensure_stability == 'relu':
-                self.Lambda.data[:, 0] = -F.relu(- (self.Lambda.data[:, 0] + eps_stability)) - eps_stability  # stability : lambda real < - epsilon --> - (lambda + epsilon) > 0
-                # self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0])
-                # Lambda_c.real = -F.relu(-Lambda_c.real) # Ensure stability
-            elif self.ensure_stability == 'abs':
-                self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0]).clamp(min=eps_stability)
-                # self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
-                # Lambda = torch.complex(-torch.abs(Lambda.real), Lambda.imag)
+            with torch.no_grad():
+                if self.ensure_stability == 'relu':
+                    self.Lambda.data[:, 0] = -F.relu(- (self.Lambda.data[:, 0] + eps_stability)) - eps_stability  # stability : lambda real < - epsilon --> - (lambda + epsilon) > 0
+                    # self.Lambda.data[:, 0] = -F.relu(-self.Lambda.data[:, 0])
+                    # Lambda_c.real = -F.relu(-Lambda_c.real) # Ensure stability
+                elif self.ensure_stability == 'abs':
+                    self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0]).clamp(min=eps_stability)
+                    # self.Lambda.data[:, 0] = -torch.abs(self.Lambda.data[:, 0])
+                    # Lambda = torch.complex(-torch.abs(Lambda.real), Lambda.imag)
 
-        Lambda_c = as_complex(self.Lambda)
+            Lambda_c = as_complex(self.Lambda)
 
        
 

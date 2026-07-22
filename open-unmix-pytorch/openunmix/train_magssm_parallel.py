@@ -49,7 +49,7 @@ def collect_lambda_stats(model) -> dict:
     statistics on Lambda * Delta.
     """
     try:
-        from model_edge.ssm_bis import Progressive_SSM
+        import model_edge
     except ImportError:
         return {}
 
@@ -58,7 +58,7 @@ def collect_lambda_stats(model) -> dict:
     base = model.module if hasattr(model, 'module') else model
 
     for name, mod in base.named_modules():
-        if not isinstance(mod, Progressive_SSM):
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
             continue
 
         with torch.no_grad():
@@ -66,15 +66,32 @@ def collect_lambda_stats(model) -> dict:
             log_step = mod.log_step.detach().float()  # [N]
             step = (mod.step_scale * torch.exp(log_step))  # Delta [N]
 
-            Lambda_c = torch.complex(L[:, 0], L[:, 1])
-            LD = Lambda_c * step
-            ld_re = LD.real
-            ld_im = LD.imag
+            # Calcul de la partie réelle effective selon le mode de stabilité du forward
+            if mod.ensure_stability == 'sigmoid_interval':
+                # produit effectif = Re(Lambda_c) * Delta
+                width = mod.re_upper - mod.re_lower
+                ld_re = mod.re_lower + width * torch.sigmoid(mod.sigmoid_scale * L[:, 0])
+            else:
+                ld_re = L[:, 0] * step  # taux d'amortissement effectif standard
+
+            ld_im = L[:, 1] * step  # fréquence en rad/sample
+            LD = torch.complex(ld_re, ld_im)
 
             Lambda_bar = torch.exp(LD)
             mag = Lambda_bar.abs()
 
             n_nan = torch.isnan(L).any().item()
+
+            alpha = getattr(model, 'alpha', getattr(base, 'alpha', 0.0))
+            beta = getattr(model, 'beta', getattr(base, 'beta', 0.0))
+
+            excess_pos = torch.clamp(ld_im - torch.pi, min=0.0)
+            w_pos = excess_pos + beta * (excess_pos > 0).float()
+
+            excess_neg = torch.clamp(-ld_im, min=0.0)
+            w_neg = excess_neg + beta * (excess_neg > 0).float()
+
+            loss_regularization = alpha * (w_pos.pow(2) + w_neg.pow(2)).mean()
 
             stats[name] = {
                 "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
@@ -85,6 +102,8 @@ def collect_lambda_stats(model) -> dict:
                 "ld_im_max":  float(ld_im.max())  if not n_nan else None,
                 "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
                 "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Terme de régularisation L2_im_lambda pour ce module
+                "loss_regularization": float(loss_regularization.item()) if not n_nan else None,
                 "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
                 "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
                 "n_nan_params": int(torch.isnan(L).sum()),
@@ -307,7 +326,7 @@ def main():
     parser.add_argument("--mel", action="store_true", default=False,
         help="SSM initialized with mel scale log frequency spacing"
     )
-    parser.add_argument("--eps-stability", type=float, default=1e-3,
+    parser.add_argument("--eps-stability", type=float, default=0,
         help="SSM eps stability parameter"
     )
     parser.add_argument("--dt-min", type=float, default=0.001,
@@ -316,8 +335,21 @@ def main():
     parser.add_argument("--dt-max", type=float, default=0.1,
         help="SSM maximum time step"
     )
-    parser.add_argument("--og", action="store_true", default=False,
+    parser.add_argument("--og", action="store_true", default=True,
         help="SSM original flag"
+    )
+    parser.add_argument("--ensure-stability", type=str, default="abs",
+        choices=["abs", "relu", "sigmoid_interval"],
+        help="Stability enforcement mode for eigenvalue real parts."
+    )
+    parser.add_argument("--re-lower", type=float, default=None,
+        help="Lower bound for Re(Lambda)*step product in sigmoid_interval mode."
+    )
+    parser.add_argument("--re-upper", type=float, default=None,
+        help="Upper bound for Re(Lambda)*step product in sigmoid_interval mode."
+    )
+    parser.add_argument("--sigmoid-scale", type=float, default=1.0,
+        help="Internal scaling factor inside the sigmoid for sigmoid_interval reparametrisation."
     )
     parser.add_argument("--bandwidth", 
                         type=int, default=16000, help="maximum model bandwidth in hz"
@@ -533,7 +565,11 @@ def main():
         og=og,
         eps_stability=eps_stability,
         dt_min=dt_min,
-        dt_max=dt_max
+        dt_max=dt_max,
+        re_lower=args.re_lower,
+        re_upper=args.re_upper,
+        ensure_stability=args.ensure_stability,
+        sigmoid_scale=args.sigmoid_scale
     ).to(device)
 
     # Load SSM weights
@@ -547,6 +583,92 @@ def main():
         ssm_state_dict = ssm_state.get("state_dict", ssm_state)
         # Filter keys corresponding to magssm_encoder
         ssm_filtered = {k: v for k, v in ssm_state_dict.items() if "magssm_encoder" in k}
+
+        # --- On-the-fly conversion of Lambda weights to sigmoid_interval logits ---
+        if args.ensure_stability == 'sigmoid_interval':
+            lambda_key = "magssm_encoder.mimo.seq.Lambda"
+            step_key = "magssm_encoder.mimo.seq.log_step"
+            re_lower_key = "magssm_encoder.mimo.seq.re_lower"
+            re_upper_key = "magssm_encoder.mimo.seq.re_upper"
+            
+            if lambda_key in ssm_filtered and step_key in ssm_filtered:
+                L = ssm_filtered[lambda_key].clone()
+                log_step = ssm_filtered[step_key]
+                step_scale = unmix.magssm_encoder.mimo.seq.step_scale
+                step = step_scale * torch.exp(log_step)
+                
+                # Check if the loaded weights are already in sigmoid_interval format
+                was_sigmoid = False
+                old_re_lower = None
+                old_re_upper = None
+                old_sigmoid_scale = 1.0
+                
+                # Try to load old config json first
+                ssm_json = Path(args.ssm_model).expanduser() / f"{args.target}.json"
+                if ssm_json.exists():
+                    try:
+                        with open(ssm_json, 'r') as f:
+                            ssm_conf = json.load(f)
+                        old_args = ssm_conf.get('args', {})
+                        if old_args.get('ensure_stability') == 'sigmoid_interval':
+                            was_sigmoid = True
+                            old_re_lower = old_args.get('re_lower')
+                            old_re_upper = old_args.get('re_upper')
+                            old_sigmoid_scale = old_args.get('sigmoid_scale', 1.0)
+                    except Exception as e:
+                        print_rank0(f"[WARN] Error reading pre-trained SSM json: {e}")
+                
+                # Fallback to checking keys in checkpoint
+                if not was_sigmoid and re_lower_key in ssm_filtered and re_upper_key in ssm_filtered:
+                    was_sigmoid = True
+                    old_re_lower = ssm_filtered[re_lower_key].item()
+                    old_re_upper = ssm_filtered[re_upper_key].item()
+                
+                if was_sigmoid:
+                    # The loaded Lambda[:, 0] are already logits.
+                    # If bounds and scaling factors match, load directly; otherwise convert logits -> physical -> new logits.
+                    if (old_re_lower == args.re_lower and 
+                        old_re_upper == args.re_upper and 
+                        old_sigmoid_scale == args.sigmoid_scale):
+                        print_rank0("[INFO] Pre-trained weights are already in sigmoid_interval format with matching bounds. Loading directly.")
+                    else:
+                        print_rank0(f"[INFO] Pre-trained weights are in sigmoid_interval format but bounds mismatch (Old: [{old_re_lower}, {old_re_upper}], New: [{args.re_lower}, {args.re_upper}]). Converting logits...")
+                        # 1. Reconstruct old physical product: Re(Lambda) * step
+                        width_old = old_re_upper - old_re_lower
+                        physical_product = old_re_lower + width_old * torch.sigmoid(old_sigmoid_scale * L[:, 0])
+                        
+                        # 2. Map to new bounds
+                        width_new = args.re_upper - args.re_lower
+                        physical_product = physical_product.clamp(min=args.re_lower, max=args.re_upper)
+                        t = (physical_product - args.re_lower) / width_new
+                        t = t.clamp(1e-6, 1.0 - 1e-6)
+                        L[:, 0] = torch.log(t / (1.0 - t)) / args.sigmoid_scale
+                        ssm_filtered[lambda_key] = L
+                        print_rank0("[INFO] Lambda weights successfully converted to new bounds.")
+                else:
+                    # Loaded Lambda[:, 0] are standard real eigenvalues (e.g. from 'abs' or 'relu' stability modes)
+                    print_rank0("[INFO] Converting pre-trained physical Lambda real parts to sigmoid_interval logits...")
+                    # Physical product = Re(Lambda_c) * step
+                    initial_product = L[:, 0] * step
+                    
+                    # Clamp within the target bounds
+                    initial_product = initial_product.clamp(min=args.re_lower, max=args.re_upper)
+                    
+                    # Inverse sigmoid mapping
+                    width_new = args.re_upper - args.re_lower
+                    t = (initial_product - args.re_lower) / width_new
+                    t = t.clamp(1e-6, 1.0 - 1e-6)
+                    L[:, 0] = torch.log(t / (1.0 - t)) / args.sigmoid_scale
+                    ssm_filtered[lambda_key] = L
+                    print_rank0("[INFO] Lambda weights successfully converted.")
+
+        # Remove old buffer values for re_lower/re_upper from checkpoint
+        # so they don't overwrite the model's new bounds during load_state_dict
+        for buf_key in ["magssm_encoder.mimo.seq.re_lower", "magssm_encoder.mimo.seq.re_upper"]:
+            if buf_key in ssm_filtered:
+                print_rank0(f"[INFO] Removing old buffer '{buf_key}' (value={ssm_filtered[buf_key].item():.6g}) from checkpoint to preserve new bounds.")
+                del ssm_filtered[buf_key]
+
         unmix.load_state_dict(ssm_filtered, strict=False)
     else:
         print_rank0("[WARN] Pre-trained SSM weights not found. Initializing randomly.")

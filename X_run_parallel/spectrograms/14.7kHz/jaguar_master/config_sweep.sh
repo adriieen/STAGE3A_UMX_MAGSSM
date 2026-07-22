@@ -23,7 +23,7 @@ TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-u
 
 # --- Arguments du modèle / dataset ---
 ROOT="/Data/adrien.dubois/musdb18_ds3"
-OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/regularized_window_double_exp/NFFT=NSTATES=682_alpha0.01"
+OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/non_progressive_170bins_alpha4e-3"
 TARGET="vocals"
 EPOCHS=60
 EPOCHS_RESUME=32    # Nombre d'époques supplémentaires à effectuer en cas de reprise
@@ -31,12 +31,13 @@ BATCH_SIZE=8
 NB_WORKERS=5
 SEQ_DUR=4
 CHUNK_DUR=1
-NB_MAGSSM_STATES=682
-N_FFT=682
+NB_MAGSSM_STATES=342
+N_FFT=340
 N_HOP=34
+LEARNING_RATE=0.01
 
 # --- Régularisation L2 sur les parties imaginaires des valeurs propres ---
-ALPHA=0.01      # facteur multiplicatif de la loss L2 (0 = pas de régularisation)
+ALPHA=0.004    # facteur multiplicatif de la loss L2 (0 = pas de régularisation)
 BETA=0          # offset sur la pénalité au-dessus de pi (0 = bord franc)
 
 # --- Paramètres de stabilité / initialisation du SSM ---
@@ -49,6 +50,8 @@ FLAG_IS_WAV=1
 FLAG_MEL=0
 FLAG_AMP=0
 FLAG_OG=1           # initialisation originale MagSSM
+FLAG_COMPLEX_SPECTROGRAM=1  
+FLAG_STRUCTURED_INITIALISATION=1 #linearly spaced imaginary parts of the eigenvalues between 0 and Pi
 
 # ─────────────────────────────────────────────────────────────────────
 # Paramètres de fenêtre à balayer
@@ -56,13 +59,13 @@ FLAG_OG=1           # initialisation originale MagSSM
 # ─────────────────────────────────────────────────────────────────────
 WINDOW_CONFIGS=(
     # === Baseline : pas de régularisation ===
-    # "none"
+    # "0 0 0"
 
     # === Configurations à balayer ===
-    # "0.5000   4.7027   4.0000" # -30dB
+    "0.5000   4.7027   4.0000" # -30dB
     # "0.0500   4.0000   2.9419 " #-35dB
-    "0.1000   4.0000   1.7152"  # -40B
-    "0.2      2.1694   1"       # -45dB
+    # "0.1000   4.0000   1.7152"  # -40B
+    # "0.2      2.1694   1"       # -45dB
 
     # "0.0530   0.4980   0.4365" # -56dB
 #     "0.1580   0.1796    0.2572"  # -61dB

@@ -15,9 +15,9 @@ except ImportError:
 
 def get_regularised_window(
     n_fft: int,
-    epsilon1: float = 0.07,
-    lambda_coeff_1: float = 0.77,
-    lambda_coeff_2: float = 0.85,
+    epsilon1: float = 0.1,
+    lambda_coeff_1: float = 4,
+    lambda_coeff_2: float = 1.7152,
     device: str = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:

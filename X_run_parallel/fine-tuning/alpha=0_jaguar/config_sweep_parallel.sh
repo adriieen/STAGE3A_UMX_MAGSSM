@@ -23,7 +23,8 @@ TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-u
 
 # --- Arguments Dataset ---
 ROOT="/Data/adrien.dubois/musdb18_ds3"
-OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/JOINT_OPTIMIZATION_parallel_sweep"
+OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/separator_frozen"
+# OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/joint_optimization"
 TARGET="vocals"
 
 # --- Hyperparamètres d'entraînement ---
@@ -51,36 +52,44 @@ COUPLES_CONFIGS=(
 
     # ----------------------------------- SCENARIO A --------------------------------------
 
-    # # -30dB
-    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.5000_l1_4.7027_l2_4.0000"
+    # baseline 
+
+    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/bilstm_classic /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/alpha=0/baseline_no_regul"
+
+    # -30dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/alpha=0/eps0.5000_l1_4.7027_l2_4.0000"
 
 
-    # # -35dB
-    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.0500_l1_4.0000_l2_2.9419"
+    # -35dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/alpha=0/eps0.0500_l1_4.0000_l2_2.9419"
 
-    # #-40dB
-    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.1000_l1_4.0000_l2_1.7152"
+    #-40dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/alpha=0/eps0.1000_l1_4.0000_l2_1.7152"
     
-    # #-45dB
-    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/eps0.2_l1_2.1694_l2_1"
-    # # Ajoutez d'autres lignes ici au besoin
+    #-45dB
+    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/SSMs/alpha=0/eps0.2_l1_2.1694_l2_1"
+    # Ajoutez d'autres lignes ici au besoin
 
 
     # -------------------------------------- SCENARIO B --------------------------------------
 
-    # -30dB
+    ## baseline
 
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.5000_l1_4.7027_l2_4.0000_ssm_eps0.5000_l1_4.7027_l2_4.0000"
+    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/bilstm_classic /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/separator_frozen/backbone_bilstm_classic_ssm_baseline_no_regul"
+
+    # # -30dB
+
+    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.5000_l1_4.7027_l2_4.0000 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/separator_frozen/backbone_eps0.5000_l1_4.7027_l2_4.0000_ssm_eps0.5000_l1_4.7027_l2_4.0000"
 
 
-    # -35 dB
+    # # -35 dB
     
-        "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.0500_l1_4.0000_l2_2.9419_ssm_eps0.0500_l1_4.0000_l2_2.9419"
+    #     "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.0500_l1_4.0000_l2_2.9419 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/separator_frozen/backbone_eps0.0500_l1_4.0000_l2_2.9419_ssm_eps0.0500_l1_4.0000_l2_2.9419"
     
-    # -40 dB
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.1000_l1_4.0000_l2_1.7152_ssm_eps0.1000_l1_4.0000_l2_1.7152"
+    # # -40 dB
+    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.1000_l1_4.0000_l2_1.7152 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/separator_frozen/backbone_eps0.1000_l1_4.0000_l2_1.7152_ssm_eps0.1000_l1_4.0000_l2_1.7152"
     
-    # -45 dB
-    "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/parallel_sweep/backbone_eps0.2_l1_2.1694_l2_1_ssm_eps0.2_l1_2.1694_l2_1"
+    # # -45 dB
+    # "/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/fine_tuning_models/UMX/eps0.2_l1_2.1694_l2_1 /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/fine-tuning/alpha=0/separator_frozen/backbone_eps0.2_l1_2.1694_l2_1_ssm_eps0.2_l1_2.1694_l2_1"
 
 )

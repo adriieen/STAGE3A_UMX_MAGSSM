@@ -33,7 +33,7 @@ def collect_lambda_stats(model) -> dict:
     statistics on Lambda * Delta.
     """
     try:
-        from model_edge.ssm_bis import Progressive_SSM
+        import model_edge
     except ImportError:
         return {}
 
@@ -41,7 +41,7 @@ def collect_lambda_stats(model) -> dict:
     base = model.module if hasattr(model, 'module') else model
 
     for name, mod in base.named_modules():
-        if not isinstance(mod, Progressive_SSM):
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
             continue
 
         with torch.no_grad():
@@ -59,6 +59,17 @@ def collect_lambda_stats(model) -> dict:
 
             n_nan = torch.isnan(L).any().item()
 
+            alpha = getattr(model, 'alpha', getattr(base, 'alpha', 0.0))
+            beta = getattr(model, 'beta', getattr(base, 'beta', 0.0))
+
+            excess_pos = torch.clamp(ld_im - torch.pi, min=0.0)
+            w_pos = excess_pos + beta * (excess_pos > 0).float()
+
+            excess_neg = torch.clamp(-ld_im, min=0.0)
+            w_neg = excess_neg + beta * (excess_neg > 0).float()
+
+            loss_regularization = alpha * (w_pos.pow(2) + w_neg.pow(2)).mean()
+
             stats[name] = {
                 "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
                 "ld_re_min":  float(ld_re.min())  if not n_nan else None,
@@ -68,6 +79,8 @@ def collect_lambda_stats(model) -> dict:
                 "ld_im_max":  float(ld_im.max())  if not n_nan else None,
                 "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
                 "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Terme de régularisation L2_im_lambda pour ce module
+                "loss_regularization": float(loss_regularization.item()) if not n_nan else None,
                 "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
                 "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
                 "n_nan_params": int(torch.isnan(L).sum()),

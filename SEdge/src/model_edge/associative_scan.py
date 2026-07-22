@@ -9,6 +9,8 @@ from functorch import vmap
 from typing import Callable, overload, Any, List, Iterable, TypeVar, Tuple
 from torch import Tensor
 
+from path_config import amp_autocast
+
 
 T = TypeVar("T")
 T1 = TypeVar("T1")
@@ -144,29 +146,32 @@ def associative_scan(operator: Callable, elems, axis: int = 0, reverse: bool =Fa
 
 
 def apply_ssm(Lambda_bars: torch.Tensor, B, B_bias, C, C_bias, input_sequence, complex_output):
-    cinput_sequence = input_sequence.type(
-        Lambda_bars.dtype)  # Cast to correct complex type
-    # Static timesteps
-    Bu_elements = cinput_sequence@B.T + B_bias.view(1,1,-1)    #B,T,C * C,H
+
+    with amp_autocast(enabled=False):
+
+        cinput_sequence = input_sequence.type(
+            Lambda_bars.dtype)  # Cast to correct complex type
+        # Static timesteps
+        Bu_elements = cinput_sequence@B.T + B_bias.view(1,1,-1)    #B,T,C * C,H
 
 
-    # Bu_elements = vmap(lambda u: B @ u)(cinput_sequence) + B_bias
+        # Bu_elements = vmap(lambda u: B @ u)(cinput_sequence) + B_bias
 
-    if Lambda_bars.ndim == 1:  # Repeat for associative_scan
-        Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
-    
+        if Lambda_bars.ndim == 1:  # Repeat for associative_scan
+            Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
+        
 
-    # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
-    _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
-    # _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
-    
-    if complex_output:
-        # out = vmap(lambda x: (C @ x))(xs) + C_bias
-        out = xs@C.T + C_bias.view(1,1,-1)
-    else:
-        # out = (vmap(lambda x: (C @ x))(xs) + C_bias).real
-        out = (xs@C.T + C_bias.view(1,1,-1)).real
-    return out
+        # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
+        # _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
+        _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
+
+        if complex_output:
+            # out = vmap(lambda x: (C @ x))(xs) + C_bias
+            out = xs@C.T + C_bias.view(1,1,-1)
+        else:
+            # out = (vmap(lambda x: (C @ x))(xs) + C_bias).real
+            out = (xs@C.T + C_bias.view(1,1,-1)).real
+        return out
 
 
 
@@ -182,38 +187,41 @@ def apply_ssm_progressive(
         last_state = None,
         subsampling_factor = 1,
         offset = 0):
-    
-    h = subsampling_factor
-    _, c, _ = input_sequence.shape
 
-    cinput_sequence = input_sequence.type(
-        Lambda_bars.dtype)  # Cast to correct complex type
-    # Static timesteps
-    Bu_elements = cinput_sequence@B.T + B_bias.view(1,1,-1)    #B,T,C *  C,H
+    with amp_autocast(enabled=False):
 
+        
+        h = subsampling_factor
+        _, c, _ = input_sequence.shape
 
-    if last_state is not None : 
-        Bu_elements[:, 0, :] += Lambda_bars * last_state
-    
+        cinput_sequence = input_sequence.type(
+            Lambda_bars.dtype)  # Cast to correct complex type
+        # Static timesteps
+        Bu_elements = cinput_sequence@B.T + B_bias.view(1,1,-1)    #B,T,C *  C,H
 
 
-    # Bu_elements = vmap(lambda u: B @ u)(cinput_sequence) + B_bias
+        if last_state is not None : 
+            Bu_elements[:, 0, :] += Lambda_bars * last_state
+        
 
-    if Lambda_bars.ndim == 1:  # Repeat for associative_scan
-        Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
 
-    # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
-    _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements) #B,T,H
-    # _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
-    
-    
-    # #downsampling here to limit nb of operation if we dont need full out -----  y_i for i ≠ k*hop_length
-    # bc final goal is to downsample by factor hop_length.....
+        # Bu_elements = vmap(lambda u: B @ u)(cinput_sequence) + B_bias
 
-    last_state = xs[:,-1,:].to(torch.float32) # B, H
-    
-    xs_subsampled = xs[:,offset::h, :] #B, T/h, H
-     
+        if Lambda_bars.ndim == 1:  # Repeat for associative_scan
+            Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
+
+        # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
+        _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements) #B,T,H
+        # _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
+        
+        
+        # #downsampling here to limit nb of operation if we dont need full out -----  y_i for i ≠ k*hop_length
+        # bc final goal is to downsample by factor hop_length.....
+
+        last_state = xs[:,-1,:].to(torch.float32) # B, H
+        
+        xs_subsampled = xs[:,offset::h, :] #B, T/h, H
+        
 
     if complex_output:
         # out = vmap(lambda x: (C @ x))(xs) + C_bias

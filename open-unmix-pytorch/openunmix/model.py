@@ -226,9 +226,9 @@ class Separator(nn.Module):
         wiener_win_len: Optional[int] = 300,
         filterbank: str = "torch",
         regularize: bool = False,
-        epsilon1: float = 0.07,
-        lambda_coeff_1: float = 0.77,
-        lambda_coeff_2: float = 0.85,
+        epsilon1: float = 0,
+        lambda_coeff_1: float = 0,
+        lambda_coeff_2: float = 0,
     ):
         super(Separator, self).__init__()
 

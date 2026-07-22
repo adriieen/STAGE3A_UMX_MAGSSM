@@ -85,7 +85,7 @@ for i in "\${!WINDOW_CONFIGS[@]}"; do
         fi
     fi
 
-    torchrun \\
+    /users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin/torchrun \\
     --nnodes=${NNODES} \\
     --nproc_per_node=${NPROC_PER_NODE} \\
     --node_rank=${RANK} \\
@@ -108,6 +108,7 @@ for i in "\${!WINDOW_CONFIGS[@]}"; do
     --eps-stability ${EPS_STABILITY} \\
     --dt-min ${DT_MIN} \\
     --dt-max ${DT_MAX} \\
+    --lr ${LEARNING_RATE} \\
     \${EXTRA_ARGS} \\
 HEREDOC
 
@@ -116,6 +117,9 @@ HEREDOC
     [ "$FLAG_MEL"    -eq 1 ] && echo "    --mel \\" >> "$OUTFILE"
     [ "$FLAG_AMP"    -eq 1 ] && echo "    --amp \\" >> "$OUTFILE"
     [ "$FLAG_OG"     -eq 1 ] && echo "    --og \\" >> "$OUTFILE"
+    [ "$FLAG_COMPLEX_SPECTROGRAM"     -eq 1 ] && echo "    --complex_spectrogram \\" >> "$OUTFILE"
+    [ "$FLAG_STRUCTURED_INITIALISATION"     -eq 1 ] && echo "    --structured_initialisation \\" >> "$OUTFILE"
+
 
     # Ajouter le paramètre de régularisation de la fenêtre
     echo "    \${REGUL_ARGS}" >> "$OUTFILE"

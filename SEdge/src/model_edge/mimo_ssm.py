@@ -2,7 +2,8 @@ import torch
 
 from typing import Optional
 
-from .ssm_bis import SSM, Progressive_SSM
+# from .ssm_bis import SSM, Progressive_SSM
+from .ssm import SSM, Progressive_SSM
 
 class MIMOSSM(torch.nn.Module):
     def __init__(self,
@@ -24,7 +25,11 @@ class MIMOSSM(torch.nn.Module):
                  chunk_duration : Optional[int] = None,
                  subsampling_factor = 1,
                  log_distributed_frequencies = False,
-                 eps_stability: float = 1e-3
+                 eps_stability: float = 1e-3,
+                 re_lower: float = None,
+                 re_upper: float = None,
+                 sigmoid_scale: float = 1.0,
+                 structured_initialisation = False
 
                 ):
         
@@ -37,6 +42,7 @@ class MIMOSSM(torch.nn.Module):
         self.step_scale = step_scale
         self.previous_step_scale = step_scale
         self.complex_output = complex_output
+        self.progressive = progressive
 
         if not progressive:
 
@@ -53,7 +59,8 @@ class MIMOSSM(torch.nn.Module):
                 complex_output=complex_output,
                 B_C_init=B_C_init,
                 ensure_stability=stability,
-                subsampling_factor = subsampling_factor
+                subsampling_factor = subsampling_factor,
+                structured_initialisation=structured_initialisation
             )
 
         else:
@@ -75,7 +82,10 @@ class MIMOSSM(torch.nn.Module):
                 chunk_duration = chunk_duration,
                 subsampling_factor = subsampling_factor,
                 log_distributed_frequencies = log_distributed_frequencies,
-                eps_stability = eps_stability
+                eps_stability = eps_stability,
+                re_lower = re_lower,
+                re_upper = re_upper,
+                sigmoid_scale = sigmoid_scale,
 
             )
             

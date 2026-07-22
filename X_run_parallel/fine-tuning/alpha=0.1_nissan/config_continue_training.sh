@@ -26,7 +26,7 @@ TARGET="vocals"
 # ATTENTION : 'EPOCHS' représente ici le nombre d'époques SUPPLÉMENTAIRES à effectuer.
 # Par exemple, si l'entraînement a été interrompu à l'époque 20 et que vous souhaitez
 # atteindre un total de 40 époques, mettez EPOCHS=20.
-EPOCHS=21
+EPOCHS=5
 BATCH_SIZE=8
 NB_WORKERS=2
 SEQ_DUR=4

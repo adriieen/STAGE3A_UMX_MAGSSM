@@ -52,10 +52,14 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
                 n_hop = results["args"]["nhop"],
                 sample_rate=results["args"]["sample_rate"])
                 
-            encoder = torch.nn.Sequential(
-                stft, 
-                ComplexNorm(mono=results["args"]["nb_channels"] == 1)
-            ).to(device)    
+            complex_spec = results["args"].get("complex_spectrogram", False)
+            if complex_spec:
+                encoder = stft.to(device)
+            else:
+                encoder = torch.nn.Sequential(
+                    stft, 
+                    ComplexNorm(mono=results["args"]["nb_channels"] == 1)
+                ).to(device)    
 
             target_model_path = next(Path(model_path).glob("%s*.pth" % target))
             state = torch.load(target_model_path, map_location=device)
@@ -68,7 +72,8 @@ def load_target_models(targets, model_str_or_path="umxl", device="cpu", pretrain
                 encoder = encoder,
                 device = device,
                 chunk_duration = int(results["args"]["chunk_dur"] * results["args"]["sample_rate"] / results["args"]["ds"]),
-                log_distributed_frequencies = results["args"]["mel"]
+                log_distributed_frequencies = results["args"]["mel"],
+                complex_spectrogram = complex_spec
             )
 
             if pretrained:

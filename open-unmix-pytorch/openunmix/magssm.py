@@ -45,6 +45,11 @@ class MagSSM_Encoder(nn.Module):
         eps_stability: float = 1e-3,
         dt_min: float = 0.001,
         dt_max: float = 0.1,
+        re_lower: float = None,
+        re_upper: float = None,
+        ensure_stability: str = 'abs',
+        sigmoid_scale: float = 1.0,
+        structured_initialisation = False
     ):
         
         super(MagSSM_Encoder, self).__init__()
@@ -54,7 +59,7 @@ class MagSSM_Encoder(nn.Module):
             d_state = dim_state,
             d_out = d_out,
             og = og,
-            progressive = True,
+            progressive = False,
             chunk_duration = chunk_duration,
             subsampling_factor = subsampling_factor,
             log_distributed_frequencies = log_distributed_frequencies,
@@ -63,6 +68,11 @@ class MagSSM_Encoder(nn.Module):
             eps_stability = eps_stability,
             dt_min = dt_min,
             dt_max = dt_max,
+            re_lower = re_lower,
+            re_upper = re_upper,
+            stability = ensure_stability,
+            sigmoid_scale = sigmoid_scale,
+            structured_initialisation=structured_initialisation
             )
         
         self.device = device

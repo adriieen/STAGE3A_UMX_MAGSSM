@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 import numpy as np
 from .associative_scan import apply_ssm, apply_ssm_progressive
-from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_spectrograms_eigenvalues
+from .init import make_linear_eigenvalues, init_log_steps, S5_init, make_structured_eigenvalues
 import math
 
 
@@ -48,7 +48,9 @@ class SSM(torch.nn.Module):
                  B_C_init='orthogonal',
                  ensure_stability='abs',
                  symmetric=False,
-                subsampling_factor = 1
+                 subsampling_factor = 1,
+                structured_initialisation = False
+
 
                  ): 
         """The Modified S5 SSM
@@ -66,9 +68,25 @@ class SSM(torch.nn.Module):
         super().__init__()
         self.symmetric = symmetric
 
-        # lambdaInit  (float32): Initial diagonal state matrix       (P,2)
-        self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
         self.log_step = torch.nn.Parameter(init_log_steps(d_state, dt_min, dt_max))
+
+        
+        # lambdaInit  (float32): Initial diagonal state matrix       (P,2)
+        
+        if structured_initialisation:
+            step = step_scale * torch.exp(self.log_step)
+
+            lambda_unscaled = make_structured_eigenvalues(d_state, d_out)
+            # print(lambda_unscaled.shape)
+            lambda_scaled = torch.cat(((lambda_unscaled[:,0])[:,None], (lambda_unscaled[:,1]/step)[:,None]), dim=1)
+            
+            self.Lambda = torch.nn.Parameter(lambda_scaled)
+        
+        else: #standard linear initialisation
+            self.Lambda = torch.nn.Parameter(make_linear_eigenvalues(d_state, symmetric=self.symmetric))
+        
+
+        
         self.discretize = discretize_zoh
 
         self.input_bias = input_bias
@@ -76,6 +94,7 @@ class SSM(torch.nn.Module):
         self.complex_output = complex_output
         self.step_scale = step_scale
         self.ensure_stability = ensure_stability
+        self.subsampling_factor = subsampling_factor
 
         if self.input_bias:
             if bias_init == 'zero':
@@ -277,9 +296,11 @@ class SSM(torch.nn.Module):
         else:
             B_bar = B_bars
             B_bias_bar = torch.zeros_like(B_bars[:, 0])
+
         # forward = apply_ssm
-        return apply_ssm(Lambda_bars, B_bar, B_bias_bar, C_c, C_bias_c, signal, self.complex_output)
-    
+        full_x = apply_ssm(Lambda_bars, B_bar, B_bias_bar, C_c, C_bias_c, signal, self.complex_output) # B,L,d_out
+        x_downsampled = full_x[:,::self.subsampling_factor,:] #B,L/n_hop,d_out
+        return x_downsampled
 
         #output = torch.zeros(B,T,d_out)
         

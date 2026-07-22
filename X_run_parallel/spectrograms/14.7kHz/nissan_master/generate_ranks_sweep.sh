@@ -69,7 +69,23 @@ for i in "\${!WINDOW_CONFIGS[@]}"; do
 
     mkdir -p "\${OUTPUT_DIR}"
 
-    torchrun \\
+    # Déterminer si on reprend un checkpoint local ou si on démarre d'un checkpoint/modèle global
+    EXTRA_ARGS=""
+    RUN_EPOCHS=${EPOCHS}
+    if [ -f "\${OUTPUT_DIR}/${TARGET}.chkpnt" ]; then
+        echo "  → Reprise automatique : checkpoint trouvé dans \${OUTPUT_DIR}"
+        EXTRA_ARGS="--checkpoint \${OUTPUT_DIR}"
+        RUN_EPOCHS=${EPOCHS_RESUME}
+    else
+        if [ -n "${CHECKPOINT}" ]; then
+            EXTRA_ARGS="--checkpoint ${CHECKPOINT}"
+            RUN_EPOCHS=${EPOCHS_RESUME}
+        elif [ -n "${MODEL}" ]; then
+            EXTRA_ARGS="--model ${MODEL}"
+        fi
+    fi
+
+    /users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin/torchrun \\
     --nnodes=${NNODES} \\
     --nproc_per_node=${NPROC_PER_NODE} \\
     --node_rank=${RANK} \\
@@ -79,7 +95,7 @@ for i in "\${!WINDOW_CONFIGS[@]}"; do
     --root "${ROOT}" \\
     --output "\${OUTPUT_DIR}" \\
     --target "${TARGET}" \\
-    --epochs ${EPOCHS} \\
+    --epochs \${RUN_EPOCHS} \\
     --batch-size ${BATCH_SIZE} \\
     --nb-workers ${NB_WORKERS} \\
     --seq-dur ${SEQ_DUR} \\
@@ -92,17 +108,18 @@ for i in "\${!WINDOW_CONFIGS[@]}"; do
     --eps-stability ${EPS_STABILITY} \\
     --dt-min ${DT_MIN} \\
     --dt-max ${DT_MAX} \\
+    --lr ${LEARNING_RATE} \\
+    \${EXTRA_ARGS} \\
 HEREDOC
-
-    # Ajouter les arguments optionnels (fine-tuning / reprise)
-    [ -n "$MODEL" ]      && echo "    --model ${MODEL} \\" >> "$OUTFILE"
-    [ -n "$CHECKPOINT" ] && echo "    --checkpoint ${CHECKPOINT} \\" >> "$OUTFILE"
 
     # Ajouter les flags booléens
     [ "$FLAG_IS_WAV" -eq 1 ] && echo "    --is-wav \\" >> "$OUTFILE"
     [ "$FLAG_MEL"    -eq 1 ] && echo "    --mel \\" >> "$OUTFILE"
     [ "$FLAG_AMP"    -eq 1 ] && echo "    --amp \\" >> "$OUTFILE"
     [ "$FLAG_OG"     -eq 1 ] && echo "    --og \\" >> "$OUTFILE"
+    [ "$FLAG_COMPLEX_SPECTROGRAM"     -eq 1 ] && echo "    --complex_spectrogram \\" >> "$OUTFILE"
+    [ "$FLAG_STRUCTURED_INITIALISATION"     -eq 1 ] && echo "    --structured_initialisation \\" >> "$OUTFILE"
+
 
     # Ajouter le paramètre de régularisation de la fenêtre
     echo "    \${REGUL_ARGS}" >> "$OUTFILE"

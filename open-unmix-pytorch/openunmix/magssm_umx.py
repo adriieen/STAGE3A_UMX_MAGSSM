@@ -54,6 +54,10 @@ class MagSSM_OpenUnmix(nn.Module):
         eps_stability: float = 1e-3,
         dt_min: float = 0.001,
         dt_max: float = 0.1,
+        re_lower: float = None,
+        re_upper: float = None,
+        ensure_stability: str = 'abs',
+        sigmoid_scale: float = 1.0,
     ):
         super(MagSSM_OpenUnmix, self).__init__()
 
@@ -83,6 +87,10 @@ class MagSSM_OpenUnmix(nn.Module):
             eps_stability=eps_stability,
             dt_min=dt_min,
             dt_max=dt_max,
+            re_lower=re_lower,
+            re_upper=re_upper,
+            ensure_stability=ensure_stability,
+            sigmoid_scale=sigmoid_scale,
         ).to(device)
 
         # STFT encoder for reference/masking

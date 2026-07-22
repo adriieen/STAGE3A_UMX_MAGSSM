@@ -102,14 +102,16 @@ def inspect_parameters(state_dict):
 def diagnose_lambda(model):
     section("DIAGNOSTIC SSM : VALEURS PROPRES DISCRÉTISÉES (Lambda_bar)")
     
-    from model_edge.ssm_bis import Progressive_SSM
-    from model_edge.ssm_bis import discretize_zoh, as_complex
+    try:
+        from model_edge.ssm import discretize_zoh, as_complex
+    except ImportError:
+        from model_edge.ssm_bis import discretize_zoh, as_complex
 
     ssm_modules = [(name, m) for name, m in model.named_modules()
-                   if isinstance(m, Progressive_SSM)]
+                   if m.__class__.__name__ in ["SSM", "Progressive_SSM"]]
 
     if not ssm_modules:
-        print("  Aucun module Progressive_SSM trouvé dans le modèle.")
+        print("  Aucun module SSM ou Progressive_SSM trouvé dans le modèle.")
         return
 
     for name, ssm in ssm_modules:

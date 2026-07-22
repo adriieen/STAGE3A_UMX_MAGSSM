@@ -27,7 +27,7 @@ import model
 import utils
 import transforms
 from spectrogram import Trainable_spectrogram
-import utils_edge_var
+import utils_spectrogram
 from path_config import amp_autocast, amp_grad_scaler
 
 
@@ -35,11 +35,15 @@ tqdm.monitor_interval = 0
 
 import pylab
 
-def save_spectrogram(X, save_path : str):
+def save_spectrogram(X, save_path : str, complex_spectrogram = False):
     """
     Saves the spectrogram of a wavefile of format 1=batch, C=2, F, T in a .png file.
     """
 
+    if complex_spectrogram:
+        X_re, X_im = X[..., 0], X[..., 1]
+        X = X_re + 1j* X_im
+    
     X = torch.mean(X,dim=1)
     X = torch.abs(X[0])
     X = torch.log(X + 1e-8)
@@ -85,7 +89,7 @@ def collect_lambda_stats(model) -> dict:
       }
     """
     try:
-        from model_edge.ssm_bis import Progressive_SSM
+        import model_edge
     except ImportError:
         return {}
 
@@ -94,7 +98,7 @@ def collect_lambda_stats(model) -> dict:
     base = model.module if hasattr(model, 'module') else model
 
     for name, mod in base.named_modules():
-        if not isinstance(mod, Progressive_SSM):
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
             continue
 
         with torch.no_grad():
@@ -102,17 +106,33 @@ def collect_lambda_stats(model) -> dict:
             log_step = mod.log_step.detach().float()  # [N]
             step = (mod.step_scale * torch.exp(log_step))  # Delta  [N]
 
-            # Produit Lambda * Delta — c'est l'exposant physiquement signifiant
-            Lambda_c = torch.complex(L[:, 0], L[:, 1])
-            LD = Lambda_c * step          # Lambda * Delta  [N] complexe
-            ld_re = LD.real               # taux d'amortissement effectif
-            ld_im = LD.imag               # fréquence en rad/sample
+            # Calcul de la partie réelle effective selon le mode de stabilité du forward
+            if mod.ensure_stability == 'sigmoid_interval':
+                # produit effectif = Re(Lambda_c) * Delta
+                width = mod.re_upper - mod.re_lower
+                ld_re = mod.re_lower + width * torch.sigmoid(mod.sigmoid_scale * L[:, 0])
+            else:
+                ld_re = L[:, 0] * step  # taux d'amortissement effectif standard
+
+            ld_im = L[:, 1] * step  # fréquence en rad/sample
+            LD = torch.complex(ld_re, ld_im)
 
             # Lambda_bar = exp(Lambda * Delta)  →  |Lambda_bar| = exp(Re(Λ·Δ))
             Lambda_bar = torch.exp(LD)
             mag = Lambda_bar.abs()        # [N]
 
             n_nan = torch.isnan(L).any().item()
+
+            alpha = getattr(model, 'alpha', getattr(base, 'alpha', 0.0))
+            beta = getattr(model, 'beta', getattr(base, 'beta', 0.0))
+
+            excess_pos = torch.clamp(ld_im - torch.pi, min=0.0)
+            w_pos = excess_pos + beta * (excess_pos > 0).float()
+
+            excess_neg = torch.clamp(-ld_im, min=0.0)
+            w_neg = excess_neg + beta * (excess_neg > 0).float()
+
+            loss_regularization = alpha * (w_pos.pow(2) + w_neg.pow(2)).mean()
 
             stats[name] = {
                 # Re(Lambda * Delta) — amortissement effectif
@@ -129,9 +149,12 @@ def collect_lambda_stats(model) -> dict:
                 # |Lambda_bar| = exp(Re(Λ·Δ))
                 "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
                 "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Terme de régularisation L2_im_lambda pour ce module
+                "loss_regularization": float(loss_regularization.item()) if not n_nan else None,
                 # Indicateurs de danger
                 "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
                 "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
+                "n_aliasing" : int((ld_im > np.pi).sum())  if not n_nan else -1,
                 "n_nan_params": int(torch.isnan(L).sum()),
             }
     return stats
@@ -139,7 +162,7 @@ def collect_lambda_stats(model) -> dict:
 
 def L2_im_lambda(model, alpha, beta):
     try:
-        from model_edge.ssm_bis import Progressive_SSM
+        import model_edge
     except ImportError:
         return 0.0
 
@@ -156,7 +179,7 @@ def L2_im_lambda(model, alpha, beta):
     penalties = []
 
     for name, mod in base.named_modules():
-        if not isinstance(mod, Progressive_SSM):
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
             continue
 
         # Keep full gradient graph
@@ -185,7 +208,8 @@ def L2_im_lambda(model, alpha, beta):
 
 
 def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer,
-          is_distributed=False, scaler=None, ds=1, alpha=1e-2, beta=0):
+          is_distributed=False, scaler=None, ds=1, alpha=1e-2, beta=0,
+          complex_spectrogram=False):
     losses = utils.AverageMeter()
     nan_batches = 0
     trainable_spectrogram.train()
@@ -204,6 +228,13 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
 
         with amp_autocast(enabled=use_amp):
             X_hat = trainable_spectrogram(x)
+            # if complex_spectrogram:
+            #     X_re , X_im = X.real, X.imag
+            #     X = torch.cat((X_re, X_im), dim=1)
+
+            #     X_hat_re , X_hat_im = X_hat.real, X_hat.imag
+            #     X_hat = torch.cat((X_hat_re, X_hat_im), dim=1) # B, 4, F, T
+
             loss = torch.nn.functional.mse_loss(X_hat, X) + L2_im_lambda(trainable_spectrogram, alpha, beta)
 
         if not torch.isfinite(loss):
@@ -244,7 +275,8 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
 
 
 def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
-          is_distributed=False, use_amp=False, ds=1, alpha=1e-2, beta=0):
+          is_distributed=False, use_amp=False, ds=1, alpha=1e-2, beta=0,
+          complex_spectrogram=False):
     """Retourne (avg_loss, X_last, X_hat_last) sans écrire sur disque."""
     losses = utils.AverageMeter()
     trainable_spectrogram.eval()
@@ -257,6 +289,13 @@ def valid(args, trainable_spectrogram, encoder, device, valid_sampler,
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 X_hat = trainable_spectrogram(x)
                 X = encoder(x)
+                # if complex_spectrogram:
+                #     X_re , X_im = X.real, X.imag
+                #     X = torch.cat((X_re, X_im), dim=1) # B, 4, F, T
+
+                #     X_hat_re , X_hat_im = X_hat.real, X_hat.imag
+                #     X_hat = torch.cat((X_hat_re, X_hat_im), dim=1) # B, 4, F, T
+
                 loss = torch.nn.functional.mse_loss(X_hat, X) + L2_im_lambda(trainable_spectrogram, alpha, beta)
 
             if not torch.isfinite(loss):
@@ -354,6 +393,24 @@ def main():
     parser.add_argument("--dt-max", type=float, default=0.1,
         help="Maximum timescale (dt) for SSM log-step initialization. (default: 0.1)")
 
+    parser.add_argument("--ensure-stability", type=str, default="abs",
+        choices=["abs", "relu", "sigmoid_interval"],
+        help="Stability enforcement mode for eigenvalue real parts. "
+             "'abs'/'relu': legacy in-place clamping. "
+             "'sigmoid_interval': differentiable sigmoid reparametrisation. (default: abs)")
+
+    parser.add_argument("--re-lower", type=float, default=None,
+        help="Lower bound for Re(Lambda)*step product when using --ensure-stability sigmoid_interval. "
+             "Must be negative. Example: -0.00316 (= -10^(-2.5))")
+
+    parser.add_argument("--re-upper", type=float, default=None,
+        help="Upper bound for Re(Lambda)*step product when using --ensure-stability sigmoid_interval. "
+        "Must be negative and > re_lower. Example: -3.16e-05 (= -10^(-4.5))")
+
+    parser.add_argument("--sigmoid-scale", type=float, default=1.0,
+        help="Internal scaling multiplier S inside the sigmoid for sigmoid_interval reparametrisation. "
+             "S = 1.0 (default) behaves normally. Higher values accelerate eigenvalue updates.")
+
     # Model Parameters
     parser.add_argument("--seq-dur",
         type=float,
@@ -425,17 +482,24 @@ def main():
                         action="store_true", default=False,
                         help="Use automatic mixed precision (AMP) during training")
 
+    parser.add_argument("--complex_spectrogram", action="store_true", default=False,
+                        help="if set to False, the training proceeds following original MagSSM setup" \
+                        "if set to True, the targets become the full complex spectrogram, with the real and imaginary parts")
+
+    parser.add_argument("--structured_initialisation", action="store_true", default=False,
+        help="Linearly spaced imaginary parts of the imaginary parts of the eigenvalues between 0 and pi.")
+
     parser.add_argument("--og", action="store_true", default=False,
         help="Uses initialization of eigenvalues and B matrix from the original MagSSM paper -- B as orthogonal and linearly spaced eigenvalues")
 
     parser.add_argument("--regularize_window", action="store_true", default=False,
         help="Regularize the STFT window with a bilateral double-exponential envelope: "
              "w_reg = hann * (eps1*exp(-l1*|t-N/2|) + eps2*exp(-l2*|t-N/2|))")
-    parser.add_argument("--epsilon1", type=float, default=0.07,
+    parser.add_argument("--epsilon1", type=float, default=0,
         help="Weight of the fast-decay exponential (eps2 = 1 - eps1)")
-    parser.add_argument("--lambda_coeff_1", type=float, default=0.77,
+    parser.add_argument("--lambda_coeff_1", type=float, default=0,
         help="Coefficient for fast exponential decay (lambda_val_1 = lambda_coeff_1 / N)")
-    parser.add_argument("--lambda_coeff_2", type=float, default=0.85,
+    parser.add_argument("--lambda_coeff_2", type=float, default=0,
         help="Coefficient for slow exponential decay (lambda_val_2 = lambda_coeff_2 / N)")
 
     args, _ = parser.parse_known_args()
@@ -548,7 +612,10 @@ def main():
         lambda_coeff_1=args.lambda_coeff_1, lambda_coeff_2=args.lambda_coeff_2,
     )
 
-    encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
+    if args.complex_spectrogram:
+        encoder = stft.to(device)
+    else:
+        encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
 
     # Freeze encoder (STFT classique — pas de paramètres à entraîner)
     encoder.eval()
@@ -565,6 +632,7 @@ def main():
         "epsilon1": args.epsilon1,
         "lambda_coeff_1": args.lambda_coeff_1,
         "lambda_coeff_2": args.lambda_coeff_2,
+        "complex_spectrogram": args.complex_spectrogram,
     }
 
     if global_rank == 0:
@@ -576,8 +644,8 @@ def main():
     # ---------------------------------------------------------------------------
     if args.model:  # fine-tune depuis un modèle existant
         print_rank0(f"Fine-tuning model from {args.model}")
-        trainable_spectrogram = utils_edge_var.load_target_models(
-            args.target, model_str_or_path=args.model, device=device, pretrained=True, magssm=True
+        trainable_spectrogram = utils_spectrogram.load_target_models(
+            args.target, model_str_or_path=args.model, device=device, pretrained=True
         )[args.target]
         trainable_spectrogram = trainable_spectrogram.to(device)
 
@@ -599,10 +667,22 @@ def main():
             eps_stability=args.eps_stability,
             dt_min=args.dt_min,
             dt_max=args.dt_max,
+            re_lower=args.re_lower,
+            re_upper=args.re_upper,
+            ensure_stability=args.ensure_stability,
+            sigmoid_scale=args.sigmoid_scale,
+            complex_spectrogram=args.complex_spectrogram,
+            structured_initialisation= args.structured_initialisation
         ).to(device)
+
+        print("Proceeding by chunks: ", trainable_spectrogram.magssm_encoder.mimo.progressive)
+
 
         total_params = sum(p.numel() for p in trainable_spectrogram.parameters() if p.requires_grad)
         print_rank0(f"Total number of parameters: {total_params}")
+
+    trainable_spectrogram.alpha = args.alpha
+    trainable_spectrogram.beta = args.beta
 
     optimizer = torch.optim.AdamW(
         trainable_spectrogram.parameters(), lr=args.lr, weight_decay=args.weight_decay
@@ -687,12 +767,14 @@ def main():
         train_loss = train(
             args, trainable_spectrogram, encoder, device, train_sampler, optimizer,
             is_distributed=is_distributed, scaler=amp_scaler, ds=args.ds,
-            alpha=args.alpha, beta=args.beta
+            alpha=args.alpha, beta=args.beta,
+            complex_spectrogram=args.complex_spectrogram
         )
         valid_loss, X_valid, X_hat_valid = valid(
             args, trainable_spectrogram, encoder, device, valid_sampler,
             is_distributed=is_distributed, use_amp=args.amp, ds=args.ds,
-            alpha=args.alpha, beta=args.beta
+            alpha=args.alpha, beta=args.beta,
+            complex_spectrogram=args.complex_spectrogram
         )
 
         # Scheduler et early stopping sur tous les rangs (la loss de validation est synchronisée)
@@ -713,9 +795,9 @@ def main():
             # Sauvegarde des spectrogrammes PNG uniquement sur la meilleure époque
             if is_best:
                 if stft_best_path is not None and X_valid is not None:
-                    save_spectrogram(X_valid, stft_best_path)
+                    save_spectrogram(X_valid, stft_best_path, complex_spectrogram=args.complex_spectrogram)
                 if magssm_best_path is not None and X_hat_valid is not None:
-                    save_spectrogram(X_hat_valid, magssm_best_path)
+                    save_spectrogram(X_hat_valid, magssm_best_path, complex_spectrogram=args.complex_spectrogram)
 
             raw_state_dict = (
                 trainable_spectrogram.module.state_dict()

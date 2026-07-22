@@ -5,11 +5,7 @@ set -euo pipefail
 
 # Configurations à balayer
 WINDOW_CONFIGS=(
-    "none"
     "0.5000   4.7027   4.0000"
-    "0.0500   4.0000   2.9419 "
-    "0.1000   4.0000   1.7152"
-    "0.2      2.1694   1"
 )
 
 echo "============================================================"
@@ -29,7 +25,7 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
         REGUL_ARGS="--regularize_window --epsilon1 ${EPS1} --lambda_coeff_1 ${LC1} --lambda_coeff_2 ${LC2}"
     fi
 
-    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/regularized_window_double_exp/NFFT=NSTATES=682_alpha0/${RUN_NAME}"
+    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/non_progressive_170bins/${RUN_NAME}"
     echo ""
     echo "────────────────────────────────────────────────────"
     echo "  [$((i+1))/${#WINDOW_CONFIGS[@]}] Lancement : ${RUN_NAME}"
@@ -54,14 +50,14 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
         fi
     fi
 
-    torchrun \
+    /users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin/torchrun \
     --nnodes=6 \
     --nproc_per_node=1 \
     --node_rank=5 \
     --master_addr="129.104.252.65" \
     --master_port=12355 \
     /users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-unmix-pytorch/openunmix/train_spectrogram_parallel.py \
-    --root "/Data/adrien.dubois" \
+    --root "/Data/adrien.dubois/musdb18_ds3" \
     --output "${OUTPUT_DIR}" \
     --target "vocals" \
     --epochs ${RUN_EPOCHS} \
@@ -69,17 +65,19 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
     --nb-workers 5 \
     --seq-dur 4 \
     --chunk-dur 1 \
-    --nb_magssm_states 682 \
-    --nfft 682 \
+    --nb_magssm_states 342 \
+    --nfft 340 \
     --nhop 34 \
     --alpha 0 \
     --beta 0 \
     --eps-stability 0 \
     --dt-min 0.001 \
     --dt-max 0.1 \
+    --lr 0.01 \
     ${EXTRA_ARGS} \
     --is-wav \
     --og \
+    --complex_spectrogram \
     ${REGUL_ARGS}
 
     echo "  → Configuration ${RUN_NAME} terminée."

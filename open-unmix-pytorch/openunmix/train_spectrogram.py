@@ -1,3 +1,5 @@
+# OUTDATED PIPELINE !!!!! 
+
 import argparse
 import torch
 import time
@@ -56,7 +58,7 @@ def collect_lambda_stats(model) -> dict:
       }
     """
     try:
-        from model_edge.ssm_bis import Progressive_SSM
+        import model_edge
     except ImportError:
         return {}
 
@@ -65,7 +67,7 @@ def collect_lambda_stats(model) -> dict:
     base = model.module if hasattr(model, 'module') else model
 
     for name, mod in base.named_modules():
-        if not isinstance(mod, Progressive_SSM):
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
             continue
 
         with torch.no_grad():
@@ -85,6 +87,17 @@ def collect_lambda_stats(model) -> dict:
 
             n_nan = torch.isnan(L).any().item()
 
+            alpha = getattr(model, 'alpha', getattr(base, 'alpha', 0.0))
+            beta = getattr(model, 'beta', getattr(base, 'beta', 0.0))
+
+            excess_pos = torch.clamp(ld_im - torch.pi, min=0.0)
+            w_pos = excess_pos + beta * (excess_pos > 0).float()
+
+            excess_neg = torch.clamp(-ld_im, min=0.0)
+            w_neg = excess_neg + beta * (excess_neg > 0).float()
+
+            loss_regularization = alpha * (w_pos.pow(2) + w_neg.pow(2)).mean()
+
             stats[name] = {
                 # Re(Lambda * Delta) — amortissement effectif
                 "ld_re_mean": float(ld_re.mean()) if not n_nan else None,
@@ -100,6 +113,8 @@ def collect_lambda_stats(model) -> dict:
                 # |Lambda_bar| = exp(Re(Λ·Δ))
                 "lbar_mag_mean": float(mag.mean()) if not n_nan else None,
                 "lbar_mag_max":  float(mag.max())  if not n_nan else None,
+                # Terme de régularisation L2_im_lambda pour ce module
+                "loss_regularization": float(loss_regularization.item()) if not n_nan else None,
                 # Indicateurs de danger
                 "n_unstable":  int((ld_re > 0.0).sum())    if not n_nan else -1,
                 "n_near_zero": int((ld_re > -1e-3).sum())  if not n_nan else -1,
@@ -107,28 +122,35 @@ def collect_lambda_stats(model) -> dict:
             }
     return stats
 
-def save_spectrograms(true_spectrogram, predicted_spectrogram, save_path: str):
+def save_spectrogram(X, save_path : str, complex_spectrogram = False):
     """
-    Saves the true and predicted spectrograms as a JSON file.
-    Tensors have format (1, C, F, T) — batch=1, C=2 channels, F frequencies, T frames.
-    The JSON structure is:
-      {
-        "true_spectrogram":      list[list[list[list[float]]]],  # shape (1, C, F, T)
-        "predicted_spectrogram": list[list[list[list[float]]]],  # shape (1, C, F, T)
-      }
+    Saves the spectrogram of a wavefile of format 1=batch, C=2, F, T in a .png file.
     """
-    true_np = true_spectrogram.detach().cpu().numpy()
-    pred_np = predicted_spectrogram.detach().cpu().numpy()
-    data = {
-        "true_spectrogram": true_np.tolist(),
-        "predicted_spectrogram": pred_np.tolist(),
-    }
-    with open(save_path, "w") as f:
-        json.dump(data, f)
+
+    if complex_spectrogram:
+        X_re, X_im = X[..., 0], X[..., 1]
+        X = X_re + 1j* X_im
+    
+    X = torch.mean(X,dim=1)
+    X = torch.abs(X[0])
+    X = torch.log(X + 1e-8)
+    pylab.imshow(X.detach().cpu().numpy(), aspect='auto', origin='lower')
+    pylab.tight_layout()
+    pylab.savefig(save_path, dpi=300)
+    pylab.close()
+
+
+def print_rank0(*args, **kwargs):
+    if dist.is_initialized():
+        if dist.get_rank() == 0:
+            print(*args, **kwargs)
+    else:
+        print(*args, **kwargs)
+
 
 def L2_im_lambda(model, alpha, beta):
     try:
-        from model_edge.ssm_bis import Progressive_SSM
+        import model_edge
     except ImportError:
         return 0.0
 
@@ -145,7 +167,7 @@ def L2_im_lambda(model, alpha, beta):
     penalties = []
 
     for name, mod in base.named_modules():
-        if not isinstance(mod, Progressive_SSM):
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
             continue
 
         # Keep full gradient graph 
@@ -173,7 +195,10 @@ def L2_im_lambda(model, alpha, beta):
     return alpha * torch.stack(penalties).mean()
 
 
-def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=None, ds = 1, alpha = 1e-2, beta = 0):
+def train(args, trainable_spectrogram, encoder, device,
+          train_sampler, optimizer, scaler=None, 
+          alpha = 1e-2, beta = 0,
+          ):
     losses = utils.AverageMeter()
     nan_batches = 0
     trainable_spectrogram.train()
@@ -182,7 +207,6 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
         pbar.set_description("Training batch")
         x = x.to(device)
         optimizer.zero_grad()
-        x = x[:, : , ::ds]
 
         use_amp = (scaler is not None) and (device.type == "cuda")
         with amp_autocast(enabled=use_amp):
@@ -215,18 +239,20 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
     return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, ds=1, alpha = 1e-2, beta = 0):
+def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, 
+        alpha = 1e-2, beta = 0,
+        ):
     losses = utils.AverageMeter()
     trainable_spectrogram.eval()
     X, X_hat = None, None
     with torch.no_grad():
         for x, _ in valid_sampler:
             x = x.to(device)
-            x = x[:, : , ::ds]
 
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 X_hat = trainable_spectrogram(x)
-                X = encoder(x)      
+                X = encoder(x)      # B,2,F,T or B,2,F,T,2 if complex_spectrograms are chosen
+
                 loss = torch.nn.functional.mse_loss(X_hat, X) + L2_im_lambda(trainable_spectrogram, alpha, beta)
 
             if not torch.isfinite(loss):
@@ -379,6 +405,11 @@ def main():
         help="Coefficient for fast exponential decay (lambda_val_1 = lambda_coeff_1 / N)")
     parser.add_argument("--lambda_coeff_2", type=float, default=0.85,
         help="Coefficient for slow exponential decay (lambda_val_2 = lambda_coeff_2 / N)")
+    
+
+    parser.add_argument("--complex_spectrogram", action="store_true", default=False,
+                        help="if set to False, the training proceeds following original MagSSM setup" \
+                        "if set to True, the targets become the full complex spectrogram, with the real and imaginary parts")
 
 
 
@@ -440,8 +471,10 @@ def main():
         lambda_coeff_1=args.lambda_coeff_1, lambda_coeff_2=args.lambda_coeff_2,
     )
 
-
-    encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
+    if args.complex_spectrogram:
+        encoder = stft.to(device)
+    else:
+        encoder = torch.nn.Sequential(stft, model.ComplexNorm(mono=args.nb_channels == 1)).to(device)
 
     # Freeze encoder
     encoder.eval()
@@ -458,6 +491,7 @@ def main():
         "epsilon1": args.epsilon1,
         "lambda_coeff_1": args.lambda_coeff_1,
         "lambda_coeff_2": args.lambda_coeff_2,
+        "complex_spectrogram": args.complex_spectrogram
     }
 
     with open(Path(target_path, "separator.json"), "w") as outfile:
@@ -506,12 +540,16 @@ def main():
             eps_stability=args.eps_stability,
             dt_min=args.dt_min,
             dt_max=args.dt_max,
+            complex_spectrogram = args.complex_spectrogram
         ).to(device)
     
 
         total_params = sum(p.numel() for p in trainable_spectrogram.parameters() if p.requires_grad)
         print(f"Total number of parameters: {total_params}")
 
+
+    trainable_spectrogram.alpha = args.alpha
+    trainable_spectrogram.beta = args.beta
 
     optimizer = torch.optim.AdamW(trainable_spectrogram.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -575,13 +613,21 @@ def main():
     else:
         lambda_history = []  # liste de dicts {epoch, stats_par_module}
 
-    saving_path_best = Path(target_path, args.target + "_spectrograms_best.json")
+    stft_best_path   = Path(target_path, args.target + "_stft_best.png")  
+    magssm_best_path = Path(target_path, args.target + "_magssm_best.png") 
 
     for epoch in t:
         t.set_description("Training epoch")
         end = time.time()
-        train_loss = train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=scaler, ds = args.ds, alpha=args.alpha, beta = args.beta)
-        valid_loss, X_val, X_hat_val = valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=args.amp, ds = args.ds, alpha=args.alpha, beta = args.beta)
+        train_loss = train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=scaler,  
+                           alpha=args.alpha, beta = args.beta,
+                           complex_spectrogram= args.complex_spectrogram)
+        
+        valid_loss, X_val, X_hat_val = valid(args, trainable_spectrogram, encoder, device, 
+                                             valid_sampler, use_amp=args.amp, 
+                                             alpha=args.alpha, beta = args.beta,
+                                             complex_spectrogram=args.complex_spectrogram)
+        
         scheduler.step(valid_loss)
         train_losses.append(train_loss)
         valid_losses.append(valid_loss)
@@ -592,8 +638,11 @@ def main():
 
         if valid_loss == es.best:
             best_epoch = epoch
-            if X_val is not None and X_hat_val is not None:
-                save_spectrograms(X_val, X_hat_val, saving_path_best)
+            if stft_best_path is not None and X_val is not None:
+                save_spectrogram(X_val, stft_best_path)
+            if magssm_best_path is not None and X_hat_val is not None:
+                save_spectrogram(X_hat_val, magssm_best_path)
+
 
         utils.save_checkpoint(
             {
