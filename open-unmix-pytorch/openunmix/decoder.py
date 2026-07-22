@@ -70,14 +70,13 @@ class Trainable_decoder(nn.Module):
     def forward(self, x: Tensor) -> Tensor: # (B,C,F,T,2) |----> (B,C,length)
 
         assert(self.length is not None, "Length is not defined for the decoder. Please set it in the constructor.")
-        assert(x.ndim == 5, "Input should have 5 dimensions (B,C,F,T,2)")
-
+        assert x.ndim == 5, "Input should have 5 dimensions (B,C,F,T,2)"    
         x_complex = torch.complex(x[...,0], x[...,1])
 
         B, C, F, T = x_complex.data.shape # expected type complex torch tensor
 
 
-        y = torch.zeros(B,C,self.length).to(self.device)
+        y = torch.zeros(B,C,self.length, dtype=torch.complex64).to(self.device)
 
         for idx_channel in range(C):
             y[:,idx_channel,:] = self.magssm_decoder(x_complex[:,idx_channel,:,:])

@@ -90,7 +90,7 @@ class MagSSM_Decoder(nn.Module):
             dt_max = dt_max,
             re_lower = re_lower,
             re_upper = re_upper,
-            stability = ensure_stability,
+            ensure_stability = ensure_stability,
             sigmoid_scale = sigmoid_scale,
             structured_initialisation=structured_initialisation
             )
@@ -103,13 +103,19 @@ class MagSSM_Decoder(nn.Module):
 
 
         B, F, T = x.data.shape # expects B, F, T
+        # print("input dimension", B,F,T)
 
         group_length = 2*(self.n_fft - self.n_hop)//self.n_hop
+        # print("group length", group_length)
+
         num_padding_frames_left = group_length//2   # so that it contributes to perform nfft//2 samples in the output, 
+        # print("num padding frames left", num_padding_frames_left)
 
         stride = self.n_fft // self.n_hop
+        # print("stride", stride)
         
-        num_groups = ( (T + num_padding_frames_left - group_length) // stride + 1 ) # number of groups of frames of length 'group_length' to cover the T frames with stride 'stride'.
+        num_groups = ( (T + num_padding_frames_left - group_length) // stride + 3) # number of groups of frames of length 'group_length' to cover the T frames with stride 'stride'.
+        # print("num_groups", num_groups)
         num_padding_frames_right = group_length - (T+num_padding_frames_left - stride*(num_groups-1))  # so that the spectrogram can be divided into groups of even size with stride s.
 
 
@@ -125,23 +131,25 @@ class MagSSM_Decoder(nn.Module):
         padding_frames_right = torch.zeros(B, F, num_padding_frames_right).to(self.device)
 
         x = torch.cat((padding_frames_left, x, padding_frames_right), dim=-1) # B, F, T' = covers the full sequence with groups of same size with stride s.
-
+        # print("extended_input_dimension", x.data.shape)
         x = x.unfold(dimension=2, size=group_length, step=stride) # B, F, num_groups, group_length
-
+        # print("unfolded input dimension", x.data.shape)
         x = x.transpose(1, 2) # B, num_groups, F, group_length
 
-        x_extended = torch.zeros(B, num_groups, self.n_fft, group_length).to(self.device) # F = n_fft //2 +1 
+        x_extended = torch.zeros(B, num_groups, self.n_fft, group_length, dtype=torch.complex64).to(self.device) # F = n_fft //2 +1 
 
         x_extended[:,:, :F , :] = x
         x_extended[:, :, F:, :] = torch.flip(torch.conj(x[:, :, 1:F-1, :]), dims=(2,))
 
-        y = torch.zeros(B, self.n_fft * num_groups)
+
+        y = torch.zeros(B, self.n_fft * num_groups, dtype = torch.complex64).to(self.device)
 
 
         for i in range(num_groups):
             output_sequence = self.single_sequence_decoder(x_extended[:,i,:,:]) # (B,n_fft)
             y[:, i*self.n_fft:(i+1)*self.n_fft] += output_sequence
 
+        # print("signal length ; n_fft ; output_shape",self.length, self.n_fft, y.shape)
         return y[:,self.n_fft : self.n_fft+self.length]
 
         
@@ -195,7 +203,7 @@ class MagSSM_Decoder_one_sequence(nn.Module):
             dt_max = dt_max,
             re_lower = re_lower,
             re_upper = re_upper,
-            ensure_stability = ensure_stability,
+            stability = ensure_stability,
             sigmoid_scale = sigmoid_scale,
             structured_initialisation=structured_initialisation
             )

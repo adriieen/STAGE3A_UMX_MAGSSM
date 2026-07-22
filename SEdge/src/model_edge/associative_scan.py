@@ -1,9 +1,15 @@
+import sys
 import numpy as np
 import torch
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
 from functools import partial
-from functorch import vmap
+try:
+    from functorch import vmap
+except ImportError:
+    vmap = getattr(torch, "vmap", None)
+
+vmap_fn = vmap if sys.version_info < (3, 10) else torch.vmap
 
 
 from typing import Callable, overload, Any, List, Iterable, TypeVar, Tuple
@@ -163,7 +169,7 @@ def apply_ssm(Lambda_bars: torch.Tensor, B, B_bias, C, C_bias, input_sequence, c
 
         # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
         # _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
-        _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
+        _, xs = vmap_fn(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
 
         if complex_output:
             # out = vmap(lambda x: (C @ x))(xs) + C_bias
@@ -211,7 +217,7 @@ def apply_ssm_progressive(
             Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
 
         # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
-        _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements) #B,T,H
+        _, xs = vmap_fn(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements) #B,T,H
         # _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
         
         
