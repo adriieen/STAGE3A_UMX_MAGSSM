@@ -173,20 +173,20 @@ def L2_im_lambda(model, alpha, beta):
     return alpha * torch.stack(penalties).mean()
 
 
-def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=None, ds = 1, alpha = 1e-2, beta = 0):
+def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer, scaler=None, alpha = 1e-2, beta = 0):
     losses = utils.AverageMeter()
     nan_batches = 0
     trainable_spectrogram.train()
     pbar = tqdm.tqdm(train_sampler, disable=args.quiet)
     for x, _ in pbar:   # (B, 2, L)
+        print(x.shape)
         pbar.set_description("Training batch")
         x = x.to(device)
         optimizer.zero_grad()
-        x = x[:, : , ::ds]
 
         use_amp = (scaler is not None) and (device.type == "cuda")
         with amp_autocast(enabled=use_amp):
-            X_hat = trainable_spectrogram(x) # x is the waveform -- Mixture audio signal 
+            X_hat = trainable_spectrogram(x) # x is the waveform -- Mixture audio signal
             X = encoder(x)
             loss = torch.nn.functional.mse_loss(X_hat, X) + L2_im_lambda(trainable_spectrogram, alpha, beta)
 
@@ -215,14 +215,14 @@ def train(args, trainable_spectrogram, encoder, device, train_sampler, optimizer
     return losses.avg if losses.count > 0 else float('nan')
 
 
-def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, ds=1, alpha = 1e-2, beta = 0):
+def valid(args, trainable_spectrogram, encoder, device, valid_sampler, use_amp=False, alpha = 1e-2, beta = 0):
     losses = utils.AverageMeter()
     trainable_spectrogram.eval()
     X, X_hat = None, None
     with torch.no_grad():
         for x, _ in valid_sampler:
             x = x.to(device)
-            x = x[:, : , ::ds]
+
 
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 X_hat = trainable_spectrogram(x)
@@ -488,9 +488,9 @@ def main():
     else:
         
         chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate) // args.ds
-        d_out = args.nb_magssm_states if args.d_out is None else args.d_out
+        # d_out = args.nb_magssm_states if args.d_out is None else args.d_out
 
-        scaler_mean, scaler_std = None, None
+        # scaler_mean, scaler_std = None, None
         
         trainable_spectrogram = Trainable_spectrogram(
             nb_bins = args.nfft // 2 + 1,

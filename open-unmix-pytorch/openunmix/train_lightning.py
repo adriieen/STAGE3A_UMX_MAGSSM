@@ -332,11 +332,11 @@ def main():
     parser.add_argument("--regularize_window", action="store_true", default=False,
         help="Regularize the STFT window with a bilateral double-exponential envelope: "
              "w_reg = hann * (eps1*exp(-l1*|t-N/2|) + eps2*exp(-l2*|t-N/2|))")
-    parser.add_argument("--epsilon1", type=float, default=0.07,
+    parser.add_argument("--epsilon1", type=float, default=0,
         help="Weight of the fast-decay exponential (eps2 = 1 - eps1)")
-    parser.add_argument("--lambda_coeff_1", type=float, default=0.77,
+    parser.add_argument("--lambda_coeff_1", type=float, default=0,
         help="Coefficient for fast exponential decay (lambda_val_1 = lambda_coeff_1 / N)")
-    parser.add_argument("--lambda_coeff_2", type=float, default=0.85,
+    parser.add_argument("--lambda_coeff_2", type=float, default=0,
         help="Coefficient for slow exponential decay (lambda_val_2 = lambda_coeff_2 / N)")
     
 
