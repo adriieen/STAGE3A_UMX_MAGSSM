@@ -6,7 +6,7 @@
 # --- Fine-tuning / Reprise ---
 # Laisser vide pour entraînement from scratch
 MODEL=""        # ex: "/path/to/model_dir"  → active --model (fine-tuning)
-CHECKPOINT=""   # ex: "/path/to/checkpoint" → active --checkpoint (reprise)
+CHECKPOINT=""
 
 # --- Topologie DDP ---
 NNODES=6
@@ -23,16 +23,17 @@ TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-u
 
 # --- Arguments du modèle / dataset ---
 ROOT="/Data/adrien.dubois/musdb18_ds3"
-OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/umx_training/seed=42_changed_lr"
+OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/post_soutenance/umx_training/[28-07]seed=42"
 TARGET="vocals"
-EPOCHS=200
+EPOCHS=400
 BATCH_SIZE=16
 NB_WORKERS=24
 SEQ_DUR=4
-N_FFT=682
-N_HOP=34
+N_FFT=680
+N_HOP=68
 HIDDEN_SIZE=170
 SEED=42
+LR=0.002
 
 # --- Flags booléens (mettre à 1 pour activer, 0 pour désactiver) ---
 FLAG_IS_WAV=1
@@ -53,9 +54,9 @@ WINDOW_CONFIGS=(
     # "0.5000   4.7027   4.0000" # -30dB          x
     # "0.0500   4.0000   2.9419 " #-35dB          x
     # "0.1000   4.0000   1.7152"  # -40B          x
-    "0.2      2.1694   1"       # -45dB         x
+    # "0.2      2.1694   1"       # -45dB         x
     # "0.0500   4.0000   0.7382" # -48.8dB        x
     # "0.0530   0.4980   0.4365" # -56dB
     # "0.1580   0.1796    0.2572"  # -61dB
-    # "0.1055   0.1000   0.1291" # -67dB
+    "0.1055   0.1000   0.1291" # -67dB
 )

@@ -7,6 +7,9 @@ from path_config import setup_paths, amp_autocast
 setup_paths()
 
 class Trainable_spectrogram(nn.Module):
+    """
+    return a complex spectrogram of same shape that the one that would have been obtained using the encoder "encoder".
+    """
 
     def __init__(
         self,
@@ -14,6 +17,8 @@ class Trainable_spectrogram(nn.Module):
         nb_channels: int = 2,
         n_hop = 1024,
         dim_state = 129,
+        progressive = False,
+        fft_kernel = False,
         og = False,
         B_C_init = None,
         C_C_init = None,
@@ -41,6 +46,8 @@ class Trainable_spectrogram(nn.Module):
             d_in = 1,
             dim_state = dim_state,
             d_out = nb_bins,
+            progressive= progressive,
+            fft_kernel = fft_kernel,
             og = og,
             B_C_init = B_C_init,
             C_C_init = C_C_init,

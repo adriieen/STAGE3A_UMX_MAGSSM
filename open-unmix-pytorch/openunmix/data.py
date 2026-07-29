@@ -287,8 +287,8 @@ def load_datasets(
             help="loads wav instead of STEMS",
         )
         parser.add_argument("--samples-per-track", type=int, default=64)
-        # parser.add_argument("--source-augmentations", type=str, default=["gain", "channelswap"], nargs="+")
-        parser.add_argument("--source-augmentations", type=str, default=None, nargs="+")
+        parser.add_argument("--source-augmentations", type=str, default=["gain", "channelswap"], nargs="+")
+        # parser.add_argument("--source-augmentations", type=str, default=None, nargs="+")
 
         args = parser.parse_args()
         dataset_kwargs = {
@@ -880,10 +880,14 @@ class MUSDBDataset(UnmixDataset):
         # pre-mixed musdb track
         else:
             # get the non-linear source mix straight from musdb
-            x = torch.as_tensor(track.audio.T, dtype=torch.float32)[..., int(self.seq_duration*self.sample_rate):2*int(self.seq_duration*self.sample_rate)]
-            print(x.shape)
-            y = torch.as_tensor(track.targets[self.target].audio.T, dtype=torch.float32)[..., int(self.seq_duration*self.sample_rate):2*int(self.seq_duration*self.sample_rate)]
-            # print("Shapes of validation inputs:", x.shape, y.shape)
+            # x = torch.as_tensor(track.audio.T, dtype=torch.float32)[..., int(self.seq_duration*self.sample_rate):2*int(self.seq_duration*self.sample_rate)]
+            # print(x.shape)
+            x = torch.as_tensor(track.audio.T, dtype=torch.float32)
+
+
+            y = torch.as_tensor(track.targets[self.target].audio.T, dtype=torch.float32)
+            # y = torch.as_tensor(track.targets[self.target].audio.T, dtype=torch.float32)[..., int(self.seq_duration*self.sample_rate):2*int(self.seq_duration*self.sample_rate)]
+            # # print("Shapes of validation inputs:", x.shape, y.shape)
         return x, y
 
     def __len__(self):

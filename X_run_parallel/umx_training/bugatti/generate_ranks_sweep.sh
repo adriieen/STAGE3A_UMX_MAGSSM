@@ -95,7 +95,7 @@ for i in "\${!WINDOW_CONFIGS[@]}"; do
     --nhop ${N_HOP} \\
     --hidden-size ${HIDDEN_SIZE} \\
     --seed ${SEED} \\
-    --lr 0.006 \\
+    --lr ${LR} \\
 HEREDOC
 
     # Ajouter les arguments optionnels (fine-tuning / reprise)

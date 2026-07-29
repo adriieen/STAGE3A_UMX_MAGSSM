@@ -23,18 +23,19 @@ def make_HiPPO(N):
 
 
 
-def make_linear_eigenvalues(N, symmetric = True):
+def make_linear_eigenvalues(N, symmetric = True, positive_frequencies: Optional[bool] = True):
     """ Create a S4D-Lin vector.
         Args:
             N (int32): state size
         Returns:
             N  complex eigenvalues
     """
+    print('Initialisation with positive frequencies:', positive_frequencies)
     if symmetric:
-        Lambda = -1/2 + 1j * np.arange(-N//2, N//2)
+        Lambda = -1/2 + (2*int(positive_frequencies) - 1)*1j * np.arange(-N//2, N//2)
     else:
         # Lambda = -0.5 + 1j * np.arange(N)
-        Lambda = -1/2 + 1j * np.linspace(0,N//2,N)
+        Lambda = -1/2 + (2*int(positive_frequencies) - 1)*1j * np.linspace(0,N//2,N)
 
     lambda_real = np.expand_dims(Lambda.real, axis=1)
     lambda_imag = np.expand_dims(Lambda.imag, axis=1)
@@ -43,26 +44,46 @@ def make_linear_eigenvalues(N, symmetric = True):
     return Lambda
 
 
-def make_structured_eigenvalues(N_states, N_bins):
-    """ Create linearly spaced states with pre-placed imaginary parts
-    """
+def make_structured_eigenvalues(N_states, N_bins, positive_frequencies: Optional[bool] = True, domain = "frequency",
+                                 target_tau:int = None, effective_samplerate:int = 14700):
 
+    """ Create linearly spaced states with pre-placed imaginary parts
+    The target_tau parameter is expressed in seconds, and corresponds to the characteristic time desired at initialisation.
+    Be cautious to precie the effective samplerate, which is fs / n_hop when working on spectrograms, and fs otherwise.
+    
+    """
+    print("Initialisation of the eigenvalues in a structured way, positives frequency:", positive_frequencies)
+    print("Domain:", domain)
     # Lambda = -0.5 + 1j * np.arange(N)
 
     model_rank = N_states // N_bins
-
-    targets = np.linspace(0,np.pi, N_bins)
-
     imaginary_parts = np.zeros(int(model_rank * N_bins))
-    for i in range(N_bins):
-        for j in range(model_rank):
-            imaginary_parts[model_rank*i+j] = targets[i] + np.random.normal(0, np.pi/N_bins/3)
-    
-    remaining = np.linspace(0, np.pi, N_states - len(imaginary_parts))
-    imaginary_parts = np.concatenate((imaginary_parts, remaining))
 
+    if domain == "frequency":
+        targets = np.linspace(0,np.pi, N_bins)
+        for i in range(N_bins):
+            for j in range(model_rank):
+                imaginary_parts[model_rank*i+j] = targets[i] + np.random.normal(0, np.pi/N_bins/3)
+        
+        remaining = np.linspace(0, np.pi, N_states - len(imaginary_parts))
+        imaginary_parts = np.concatenate((imaginary_parts, remaining))
+        
+        real_parts = -1/2 if target_tau is None else -1/(target_tau*effective_samplerate)
 
-    Lambda = -1/2 + 1j * imaginary_parts
+    elif domain == "time":
+        targets = np.arange(N_bins) #bins are time steps
+        for i in range(N_bins):
+            for j in range(model_rank):
+                imaginary_parts[model_rank*i+j] = targets[i] + np.abs(np.random.normal(0, 1/3))
+        
+        remaining = np.linspace(0, N_bins, N_states - len(imaginary_parts))
+        imaginary_parts = np.concatenate((imaginary_parts, remaining))
+        real_parts = -1/2 * N_bins / np.pi
+
+    else:
+        pass
+
+    Lambda = real_parts + 1j * (2*int(positive_frequencies) - 1)*imaginary_parts 
 
     lambda_real = np.expand_dims(Lambda.real, axis=1)
     lambda_imag = np.expand_dims(Lambda.imag, axis=1)
@@ -72,6 +93,7 @@ def make_structured_eigenvalues(N_states, N_bins):
 
 
 def make_spectrograms_eigenvalues(N, log_distributed_frequencies= True):
+
  
     # 1/sigma ~ nb of frames that an excitation lasts : depends on sample rate --> caracteristic time tau =  (1/sigma) / samplerate 
     sigma = - torch.ones(N) / 400

@@ -25,7 +25,7 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
         REGUL_ARGS="--regularize_window --epsilon1 ${EPS1} --lambda_coeff_1 ${LC1} --lambda_coeff_2 ${LC2}"
     fi
 
-    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/non_progressive_170bins/${RUN_NAME}"
+    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/[small_lr]non_progressive_342bins_alpha0_structured_init/${RUN_NAME}"
     echo ""
     echo "────────────────────────────────────────────────────"
     echo "  [$((i+1))/${#WINDOW_CONFIGS[@]}] Lancement : ${RUN_NAME}"
@@ -36,22 +36,22 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
 
     # Déterminer si on reprend un checkpoint local ou si on démarre d'un checkpoint/modèle global
     EXTRA_ARGS=""
-    RUN_EPOCHS=60
+    RUN_EPOCHS=400
     if [ -f "${OUTPUT_DIR}/vocals.chkpnt" ]; then
         echo "  → Reprise automatique : checkpoint trouvé dans ${OUTPUT_DIR}"
         EXTRA_ARGS="--checkpoint ${OUTPUT_DIR}"
-        RUN_EPOCHS=32
+        RUN_EPOCHS=40
     else
         if [ -n "" ]; then
             EXTRA_ARGS="--checkpoint "
-            RUN_EPOCHS=32
+            RUN_EPOCHS=40
         elif [ -n "" ]; then
             EXTRA_ARGS="--model "
         fi
     fi
 
     /users/eleves-a/2023/adrien.dubois/.conda/envs/umx310train/bin/torchrun \
-    --nnodes=6 \
+    --nnodes=18 \
     --nproc_per_node=1 \
     --node_rank=2 \
     --master_addr="129.104.252.65" \
@@ -65,19 +65,21 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
     --nb-workers 5 \
     --seq-dur 4 \
     --chunk-dur 1 \
-    --nb_magssm_states 342 \
-    --nfft 340 \
-    --nhop 34 \
+    --nb_magssm_states 682 \
+    --nfft 680 \
+    --nhop 68 \
     --alpha 0 \
     --beta 0 \
     --eps-stability 0 \
     --dt-min 0.001 \
     --dt-max 0.1 \
-    --lr 0.01 \
+    --lr 0.001 \
     ${EXTRA_ARGS} \
     --is-wav \
+    --fft_kernel \
     --og \
     --complex_spectrogram \
+    --structured_initialisation \
     ${REGUL_ARGS}
 
     echo "  → Configuration ${RUN_NAME} terminée."

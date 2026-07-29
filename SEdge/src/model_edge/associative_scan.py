@@ -1,4 +1,5 @@
 import sys
+import math
 import numpy as np
 import torch
 from torch.utils._pytree import tree_flatten, tree_unflatten
@@ -154,28 +155,25 @@ def associative_scan(operator: Callable, elems, axis: int = 0, reverse: bool =Fa
 def apply_ssm(Lambda_bars: torch.Tensor, B, B_bias, C, C_bias, input_sequence, complex_output):
 
     with amp_autocast(enabled=False):
+        batch_size = input_sequence.shape[0]
 
         cinput_sequence = input_sequence.type(
             Lambda_bars.dtype)  # Cast to correct complex type
         # Static timesteps
         Bu_elements = cinput_sequence@B.T + B_bias.view(1,1,-1)    #B,T,C * C,H
 
-
-        # Bu_elements = vmap(lambda u: B @ u)(cinput_sequence) + B_bias
-
         if Lambda_bars.ndim == 1:  # Repeat for associative_scan
             Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
         
+        Lambda_bars_expanded = Lambda_bars.unsqueeze(1).expand(-1, batch_size, -1)
+        Bu_elements_permuted = Bu_elements.permute(1, 0, 2)
 
-        # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
-        # _, xs = vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
-        _, xs = vmap_fn(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
+        _, xs_permuted = associative_scan(binary_operator, (Lambda_bars_expanded, Bu_elements_permuted), axis=0)
+        xs = xs_permuted.permute(1, 0, 2)
 
         if complex_output:
-            # out = vmap(lambda x: (C @ x))(xs) + C_bias
             out = xs@C.T + C_bias.view(1,1,-1)
         else:
-            # out = (vmap(lambda x: (C @ x))(xs) + C_bias).real
             out = (xs@C.T + C_bias.view(1,1,-1)).real
         return out
 
@@ -195,47 +193,115 @@ def apply_ssm_progressive(
         offset = 0):
 
     with amp_autocast(enabled=False):
-
-        
         h = subsampling_factor
-        _, c, _ = input_sequence.shape
+        batch_size = input_sequence.shape[0]
 
         cinput_sequence = input_sequence.type(
             Lambda_bars.dtype)  # Cast to correct complex type
         # Static timesteps
         Bu_elements = cinput_sequence@B.T + B_bias.view(1,1,-1)    #B,T,C *  C,H
 
-
-        if last_state is not None : 
-            Bu_elements[:, 0, :] += Lambda_bars * last_state
-        
-
-
-        # Bu_elements = vmap(lambda u: B @ u)(cinput_sequence) + B_bias
+        if last_state is not None:
+            first_step = Bu_elements[:, 0, :] + Lambda_bars * last_state
+            if Bu_elements.shape[1] > 1:
+                Bu_elements = torch.cat([first_step.unsqueeze(1), Bu_elements[:, 1:, :]], dim=1)
+            else:
+                Bu_elements = first_step.unsqueeze(1)
 
         if Lambda_bars.ndim == 1:  # Repeat for associative_scan
             Lambda_bars = Lambda_bars.tile(input_sequence.shape[1], 1)
 
-        # _, xs = associative_scan(binary_operator, (Lambda_bars, Bu_elements))
-        _, xs = vmap_fn(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements) #B,T,H
-        # _, xs = torch.vmap(lambda Bu : associative_scan(binary_operator, (Lambda_bars, Bu)))(Bu_elements)
-        
-        
-        # #downsampling here to limit nb of operation if we dont need full out -----  y_i for i ≠ k*hop_length
-        # bc final goal is to downsample by factor hop_length.....
+        # Avoid vmap over batch dimension by permuting Bu_elements to (Time, Batch, States) 
+        # and expanding Lambda_bars to match. This enables training with AMP and reduces memory usage.
+        Lambda_bars_expanded = Lambda_bars.unsqueeze(1).expand(-1, batch_size, -1)
+        Bu_elements_permuted = Bu_elements.permute(1, 0, 2)
 
-        last_state = xs[:,-1,:].to(torch.float32) # B, H
+        _, xs_permuted = associative_scan(binary_operator, (Lambda_bars_expanded, Bu_elements_permuted), axis=0)
+        xs = xs_permuted.permute(1, 0, 2) # (Batch, Time, States)
+
+        last_state = xs[:,-1,:] # B, H
         
         xs_subsampled = xs[:,offset::h, :] #B, T/h, H
-        
 
     if complex_output:
-        # out = vmap(lambda x: (C @ x))(xs) + C_bias
         out = xs_subsampled@C.T + C_bias.view(1,1,-1) # B, T/h, d_out
     else:
-        # out = (vmap(lambda x: (C @ x))(xs) + C_bias).real
         out = (xs_subsampled@C.T + C_bias.view(1,1,-1)).real
     
     return last_state, out
+
+
+
+
+def apply_ssm_ft(
+    Lambda_bars: torch.Tensor, 
+    B_bar: torch.Tensor, 
+    B_bias_bar: torch.Tensor, 
+    C: torch.Tensor, 
+    C_bias: torch.Tensor, 
+    input_sequence: torch.Tensor, 
+    complex_output: bool, 
+    subsampling_factor: int = 1
+):
+    """
+    Computes the SSM output using Fast Fourier Transform (FFT) convolution.
+    
+    Args:
+        Lambda_bars: Discretized state transition matrix exp(Lambda * dt), shape (d_state,)
+        B_bar: Discretized input matrix, shape (d_state, d_in)
+        B_bias_bar: Discretized input bias, shape (d_state,)
+        C: Output matrix, shape (d_out, d_state)
+        C_bias: Output bias, shape (d_out,)
+        input_sequence: Input tensor, shape (Batch, Time, d_in)
+        complex_output: Whether output should remain complex or take real part
+        subsampling_factor: Downsampling hop factor h
+    """
+    with amp_autocast(enabled=False):
+        batch_size, L, d_in = input_sequence.shape
+        d_state = Lambda_bars.shape[0]
+        d_out = C.shape[0]
+
+        cinput_sequence = input_sequence.type(Lambda_bars.dtype)
+
+        # 1. Compute state powers Lambda_bars^t for t = 0 ... L-1
+        log_Lambda = torch.log(Lambda_bars)  # (d_state,)
+        t_steps = torch.arange(L, device=input_sequence.device, dtype=torch.float32)  # (L,)
+        Lambda_powers = torch.exp(t_steps.unsqueeze(1) * log_Lambda.unsqueeze(0))  # (L, d_state)
+
+        # 2. Compute SSM impulse response kernel K_t = sum_p C_{o, p} * Lambda_powers_{t, p} * B_{p, i}
+        W = C.unsqueeze(2) * B_bar.unsqueeze(0)  # (d_out, d_state, d_in)
+        W_perm = W.permute(1, 0, 2).reshape(d_state, d_out * d_in)  # (d_state, d_out * d_in)
+        
+        K_flat = Lambda_powers @ W_perm  # (L, d_out * d_in)
+        K = K_flat.view(L, d_out, d_in)  # (L, d_out, d_in)
+
+        # 3. FFT Convolution: pad to N_fft >= 2 * L
+        N_fft = 2 ** math.ceil(math.log2(2 * L))
+
+        u_fft = torch.fft.fft(cinput_sequence, n=N_fft, dim=1)  # (B, N_fft, d_in)
+        K_fft = torch.fft.fft(K, n=N_fft, dim=0)  # (N_fft, d_out, d_in)
+
+        # Frequency domain multiplication & summation over d_in
+        Y_fft = torch.einsum('bfi, foi -> bfo', u_fft, K_fft)  # (B, N_fft, d_out)
+
+        # Inverse FFT to return to time domain
+        y_conv = torch.fft.ifft(Y_fft, dim=1)[:, :L, :]  # Truncate to original length L
+
+        # Add input bias response if present
+        if B_bias_bar is not None and torch.any(B_bias_bar != 0):
+            W_bias = C * B_bias_bar.unsqueeze(0)  # (d_out, d_state)
+            bias_response = Lambda_powers @ W_bias.T  # (L, d_out)
+            y_conv = y_conv + bias_response.unsqueeze(0)
+
+        # Downsample along time dimension if subsampling_factor > 1
+        xs_subsampled = y_conv[:, ::subsampling_factor, :]
+
+        # Add output bias
+        out = xs_subsampled + C_bias.view(1, 1, -1)
+
+        if not complex_output:
+            out = out.real
+
+        return out
 
 

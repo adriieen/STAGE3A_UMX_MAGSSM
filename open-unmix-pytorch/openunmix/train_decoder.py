@@ -207,7 +207,7 @@ def train(args, trainable_decoder, encoder, device,
         with amp_autocast(enabled=use_amp):
             X = encoder(x) # complex valued spectrogram of the target signal, format (B,C,F,T,2)
 
-            y_hat = trainable_decoder(X) # returns real-valued waveform (trainable_decoder.return_complex_signal = False)
+            y_hat = trainable_decoder(X, length = x.data.shape[-1]) # returns real-valued waveform (trainable_decoder.return_complex_signal = False)
             
             Y_hat = encoder(y_hat) # complex valued spectrogram of the reconstructed signal/waveform, format (B,C,F,T,2)
 
@@ -254,7 +254,7 @@ def valid(args, trainable_decoder, encoder, device,
             with amp_autocast(enabled=use_amp and (device.type == "cuda")):
                 X = encoder(x) # complex valued spectrogram of the target signal, format (B,C,F,T,2)
 
-                y_hat = trainable_decoder(X) # returns real-valued waveform (decoder.return_complex_signal = False)
+                y_hat = trainable_decoder(X, length = x.data.shape[-1]) # returns real-valued waveform (decoder.return_complex_signal = False)
                 
                 Y_hat = encoder(y_hat) # complex valued spectrogram of the reconstructed signal/waveform, format (B,C,F,T,2)
 
@@ -382,6 +382,12 @@ def main():
                         help = "chunk duration in seconds. Only relevant if flag 'progressive' is set." \
                         "The input sequence will be split into chunks for computation by the SSM module")
 
+    parser.add_argument("--progressive", action="store_true", default=False,
+                        help="If set, will proceed the SSM in chunks + gradient checkpointing, thus reducing VRAM consumption")
+
+    parser.add_argument("--fft_kernel", "--fft-kernel", action="store_true", default=False,
+                        help="If set, will use Fast Fourier Transform convolution kernel for SSM computation")
+
     parser.add_argument("--mel", action="store_true", default = False,
                         help = "If put as an argument, will initialize the argument of the eigenvalues of the A-matrix " \
                         "according to a log scale to enhance resolution in the lower frequency domain")
@@ -470,7 +476,6 @@ def main():
     train_dataset, valid_dataset, args = data.load_datasets(parser, args)
 
     args.sample_rate = train_dataset.sample_rate // args.ds
-    args.length = int(args.seq_dur * args.sample_rate)
 
     # create output dir if not exist
     target_path = Path(args.output)
@@ -497,7 +502,6 @@ def main():
     separator_conf = {
         "nfft": args.nfft,
         "nhop": args.nhop,
-        "length": args.length,
         "sample_rate": train_dataset.sample_rate // args.ds,
         "nb_channels": args.nb_channels,
         "nb_magssm_states" : args.nb_magssm_states,
@@ -534,15 +538,16 @@ def main():
 
     else:
         chunk_duration_in_frames = int(args.chunk_dur * args.sample_rate)
-        
+        progressive_mode = "fft" if args.fft_kernel else (True if args.progressive else False)
+
         trainable_decoder = Trainable_decoder(
             n_fft = args.nfft,
             n_hop = args.nhop,
-            length = args.length,
             dim_state=args.nb_magssm_states,
             og= args.og,
             B_C_init= "orthogonal", 
             device = device,
+            progressive = progressive_mode,
             chunk_duration = chunk_duration_in_frames,
             log_distributed_frequencies= args.mel,
             eps_stability=args.eps_stability,

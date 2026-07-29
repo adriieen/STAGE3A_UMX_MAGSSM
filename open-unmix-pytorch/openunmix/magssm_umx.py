@@ -6,7 +6,8 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import LSTM, BatchNorm1d, Linear, Parameter
 from transforms import make_filterbanks, ComplexNorm
-from magssm import MagSSM_Encoder
+from spectrogram import Trainable_spectrogram
+from decoder import Trainable_decoder
 
 class MagSSM_OpenUnmix(nn.Module):
     """OpenUnmix core separation module using trainable MagSSM encoder.
@@ -41,23 +42,27 @@ class MagSSM_OpenUnmix(nn.Module):
         input_mean: Optional[np.ndarray] = None,
         input_scale: Optional[np.ndarray] = None,
         max_bin: Optional[int] = None,
-        dim_state: int = 682,
+        dim_state: int = 129,
         d_out: Optional[int] = None,
-        n_fft: int = 682,
-        n_hop: int = 34,
+        n_fft: int = 4096,
+        n_hop: int = 1024,
         encoder: Optional[nn.Module] = None,
         device = None,
         chunk_duration: Optional[int] = None,
         log_distributed_frequencies: bool = False,
-        use_layernorm: bool = False,
+        use_layernorm: bool = True,
         og: bool = False,
         eps_stability: float = 1e-3,
         dt_min: float = 0.001,
         dt_max: float = 0.1,
-        re_lower: float = None,
-        re_upper: float = None,
+        re_lower: Optional[float] = None,
+        re_upper: Optional[float] = None,
         ensure_stability: str = 'abs',
         sigmoid_scale: float = 1.0,
+        progressive: bool = False,
+        fft_kernel: bool = False,
+        complex_spectrogram: bool = True,
+        structured_initialisation: bool = False,
     ):
         super(MagSSM_OpenUnmix, self).__init__()
 
@@ -74,16 +79,20 @@ class MagSSM_OpenUnmix(nn.Module):
         # d_out is the output frequency dimension from the SSM
         self.d_out = d_out if d_out is not None else self.nb_bins
 
-        # MagSSM Encoder
-        self.magssm_encoder = MagSSM_Encoder(
-            d_in=1,
+        # spectrogram
+        self.trainable_spectrogram = Trainable_spectrogram(
+            nb_bins=n_fft // 2 + 1,
+            nb_channels=nb_channels,
+            n_hop=n_hop,
             dim_state=dim_state,
-            d_out=self.d_out,
             og=og,
+            B_C_init="orthogonal" if og else "ones",
+            encoder=encoder,
             device=device,
-            log_distributed_frequencies=log_distributed_frequencies,
+            progressive=progressive,
+            fft_kernel=fft_kernel,
             chunk_duration=chunk_duration,
-            subsampling_factor=n_hop,
+            log_distributed_frequencies=log_distributed_frequencies,
             eps_stability=eps_stability,
             dt_min=dt_min,
             dt_max=dt_max,
@@ -91,10 +100,10 @@ class MagSSM_OpenUnmix(nn.Module):
             re_upper=re_upper,
             ensure_stability=ensure_stability,
             sigmoid_scale=sigmoid_scale,
+            complex_spectrogram=complex_spectrogram,
+            structured_initialisation=structured_initialisation,
         ).to(device)
 
-        # STFT encoder for reference/masking
-        self.encoder = encoder
         self.device = device
 
         # Separation module projection
@@ -161,106 +170,103 @@ class MagSSM_OpenUnmix(nn.Module):
             p.requires_grad = False
         self.eval()
 
-    def forward(self, x: Tensor, X: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         """
         Args:
             x: raw audio waveform of shape `(nb_samples, nb_channels, nb_timesteps)`
-            X: Optional reference spectrogram of shape `(nb_samples, nb_channels, nb_bins, nb_frames)`
         
         Returns:
-            masked target spectrogram of shape `(nb_samples, nb_channels, nb_bins, nb_frames)`
+            complex spectrogram of the target estimate of shape `(nb_samples, nb_channels, nb_bins, nb_frames, 2)` or `(nb_samples, nb_channels, nb_bins, nb_frames)`
         """
-        x_orig = x
-        if X is None:
-            with torch.no_grad():
-                if self.encoder:
-                    X = self.encoder(x_orig.float())
-                else:
-                    raise ValueError('Encoder should not be none')
+        # C-MAGSSM complex spectrogram output
+        spec = self.trainable_spectrogram(x)
 
-        _, _, _, T = X.data.shape
+        if spec.ndim == 5:
+            spec_complex = torch.complex(spec[..., 0], spec[..., 1])
+        else:
+            spec_complex = spec
 
-        # Run MagSSM Encoder channel-wise
-        x_left, x_right = x[:, 0, :], x[:, 1, :]
-        x_left = self.magssm_encoder(x_left)
-        x_right = self.magssm_encoder(x_right)
+        # Magnitude of mixture spectrogram
+        magnitude = torch.abs(spec_complex)
 
-        # Combine channels and absolute value
-        x = torch.cat((x_left[:, None, ...], x_right[:, None, ...]), dim=1) # B, 2, T, d_out
-        x = torch.abs(x)
+        # Permute to T, B, C, F for OpenUnmix processing
+        x_in = magnitude.permute(3, 0, 1, 2)
 
-        # Permute to T, B, C, F
-        x = x.permute(2, 0, 1, 3)
-
-        nb_frames, nb_samples, nb_channels, d_out = x.data.shape
+        nb_frames, nb_samples, nb_channels, d_out = x_in.data.shape
 
         # Crop frequency dimension if needed
-        x = x[..., : self.nb_bins]
+        x_in = x_in[..., : self.nb_bins]
 
         # Shift and scale input
-        x = x + self.input_mean
-        x = x * self.input_scale
+        x_in = x_in + self.input_mean
+        x_in = x_in * self.input_scale
 
-        # Project and normalize
-        x = self.fc1(x.reshape(-1, nb_channels * self.nb_bins))
+        # Project and normalize (Encoder block: FC1 + LN1/BN1 + Tanh)
+        h = self.fc1(x_in.reshape(-1, nb_channels * self.nb_bins))
         if self.use_layernorm:
-            x = self.ln1(x)
+            h = self.ln1(h)
         else:
-            x = self.bn1(x)
+            h = self.bn1(h)
         
-        x = x.reshape(nb_frames, nb_samples, self.hidden_size)
-        x = torch.tanh(x)
+        h = h.reshape(nb_frames, nb_samples, self.hidden_size)
+        h = torch.tanh(h)
 
-        # Run Bidirectional/Unidirectional LSTM
-        if not x.is_contiguous():
-            x = x.contiguous()
+        # Run Bidirectional/Unidirectional LSTM (Separator block)
+        if not h.is_contiguous():
+            h = h.contiguous()
 
-        if x.shape[0] >= 65536:
+        if h.shape[0] >= 65536:
             prev_enabled = torch.backends.cudnn.enabled
             torch.backends.cudnn.enabled = False
             try:
-                lstm_out, _ = self.lstm(x)
+                lstm_out, _ = self.lstm(h)
             finally:
                 torch.backends.cudnn.enabled = prev_enabled
         else:
-            lstm_out, _ = self.lstm(x)
+            lstm_out, _ = self.lstm(h)
 
         # Skip connection
-        x = torch.cat([x, lstm_out], -1)
+        h_cat = torch.cat([h, lstm_out], -1)
 
-        # FC2 layer
-        x = self.fc2(x.reshape(-1, x.shape[-1]))
+        # FC2 layer + LN2/BN2 + ReLU
+        h2 = self.fc2(h_cat.reshape(-1, h_cat.shape[-1]))
         if self.use_layernorm:
-            x = self.ln2(x)
+            h2 = self.ln2(h2)
         else:
-            x = self.bn2(x)
-        x = F.relu(x)
+            h2 = self.bn2(h2)
+        h2 = F.relu(h2)
 
-        # FC3 layer
-        x = self.fc3(x)
+        # FC3 layer + LN3/BN3 (Decoder block)
+        out = self.fc3(h2)
         if self.use_layernorm:
-            x = self.ln3(x)
+            out = self.ln3(out)
         else:
-            x = self.bn3(x)
+            out = self.bn3(out)
 
-        # Reshape to spectrogram
-        x = x.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)
-        x *= self.output_scale
-        x += self.output_mean
+        # Reshape to spectrogram mask
+        mask = out.reshape(nb_frames, nb_samples, nb_channels, self.nb_output_bins)
+        mask *= self.output_scale
+        mask += self.output_mean
+        mask = F.relu(mask)
 
         # Permute back to B, C, F, T
-        x = x.permute(1, 2, 3, 0)
-        x = x[..., :T]
+        mask = mask.permute(1, 2, 3, 0)
 
-        # Return masked spectrogram
-        return F.relu(x) * X
+        # Pointwise product: Target estimated complex spectrogram = Mask * Mix Spectrogram
+        if spec.ndim == 5:
+            target_spec = mask[..., None] * spec
+        else:
+            target_spec = mask * spec_complex
+
+        return target_spec
 
 
 class Separator(nn.Module):
-    """Wrapper to enable separation of target sources."""
+    """Wrapper to enable end-to-end separation using MagSSM_OpenUnmix and Trainable_decoder."""
     def __init__(
         self,
         target_models: Mapping[str, nn.Module],
+        decoders: Optional[Mapping[str, nn.Module]] = None,
         niter: int = 0,
         softmask: bool = False,
         residual: bool = False,
@@ -272,9 +278,9 @@ class Separator(nn.Module):
         filterbank: str = "torch",
         device = None,
         regularize: bool = False,
-        epsilon1: float = 0.07,
-        lambda_coeff_1: float = 0.77,
-        lambda_coeff_2: float = 0.85,
+        epsilon1: float = 0,
+        lambda_coeff_1: float = 0,
+        lambda_coeff_2: float = 0,
     ):
         super(Separator, self).__init__()
 
@@ -294,9 +300,14 @@ class Separator(nn.Module):
             lambda_coeff_1=lambda_coeff_1,
             lambda_coeff_2=lambda_coeff_2,
         )
-        self.complexnorm = ComplexNorm(mono=nb_channels == 1)
 
+        self.complexnorm = ComplexNorm(mono=nb_channels == 1)
         self.target_models = nn.ModuleDict(target_models)
+        if decoders is not None:
+            self.decoders = nn.ModuleDict(decoders)
+        else:
+            self.decoders = None
+
         self.nb_targets = len(self.target_models)
         self.register_buffer("sample_rate", torch.as_tensor(sample_rate))
 
@@ -306,52 +317,40 @@ class Separator(nn.Module):
         self.eval()
 
     def forward(self, audio: Tensor) -> Tensor:
+        """
+        Performing the separation on audio input.
+
+        Args:
+            audio: mixture audio waveform (nb_samples, nb_channels, nb_timesteps)
+
+        Returns:
+            stacked tensor of separated waveforms (nb_samples, nb_targets, nb_channels, nb_timesteps)
+        """
         nb_sources = self.nb_targets
         nb_samples = audio.shape[0]
 
-        mix_stft = self.stft(audio)
-        X = self.complexnorm(mix_stft).to(self.device)
-
-        spectrograms = torch.zeros(X.shape + (nb_sources,), dtype=audio.dtype, device=X.device)
-
+        estimates = []
         for j, (target_name, target_module) in enumerate(self.target_models.items()):
             target_module.to(self.device)
-            audio_device = audio.detach().clone().to(self.device)
-            target_spectrogram = target_module(audio_device)
-            spectrograms[..., j] = target_spectrogram
+            audio_device = audio.to(self.device)
 
-        spectrograms = spectrograms.permute(0, 3, 2, 1, 4)
-        mix_stft = mix_stft.permute(0, 3, 2, 1, 4)
+            # 1. Forward through MagSSM_OpenUnmix model -> target complex spectrogram
+            S_target = target_module(audio_device)
 
-        if self.residual:
-            nb_sources += 1
-
-        if nb_sources == 1 and self.niter > 0:
-            raise Exception("Cannot use EM if only one target is estimated.")
-
-        nb_frames = spectrograms.shape[1]
-        targets_stft = torch.zeros(mix_stft.shape + (nb_sources,), dtype=audio.dtype, device=mix_stft.device)
-        for sample in range(nb_samples):
-            pos = 0
-            if self.wiener_win_len:
-                wiener_win_len = self.wiener_win_len
+            # 2. Forward through Trainable_decoder if present
+            if self.decoders is not None and target_name in self.decoders:
+                decoder = self.decoders[target_name].to(self.device)
+                y_hat = decoder(S_target, length=audio.shape[-1])
             else:
-                wiener_win_len = nb_frames
-            while pos < nb_frames:
-                cur_frame = torch.arange(pos, min(nb_frames, pos + wiener_win_len))
-                pos = int(cur_frame[-1]) + 1
+                # Fallback to inverse STFT if no trainable decoder provided
+                if S_target.ndim == 5:
+                    y_hat = self.istft(S_target.permute(0, 1, 2, 3, 4), length=audio.shape[-1])
+                else:
+                    y_hat = self.istft(S_target, length=audio.shape[-1])
 
-                from filtering import wiener
-                targets_stft[sample, cur_frame] = wiener(
-                    spectrograms[sample, cur_frame],
-                    mix_stft[sample, cur_frame],
-                    self.niter,
-                    softmask=self.softmask,
-                    residual=self.residual,
-                )
+            estimates.append(y_hat)
 
-        targets_stft = targets_stft.permute(0, 5, 3, 2, 1, 4).contiguous()
-        estimates = self.istft(targets_stft, length=None)
+        estimates = torch.stack(estimates, dim=1) # (nb_samples, nb_targets, nb_channels, nb_timesteps)
 
         # Pad or crop to match original length
         pad_len = audio.shape[2] - estimates.shape[-1]
@@ -378,3 +377,4 @@ class Separator(nn.Module):
                     new_estimates[key] = new_estimates[key] + estimates_dict[target]
             estimates_dict = new_estimates
         return estimates_dict
+

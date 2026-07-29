@@ -22,7 +22,7 @@ import torchaudio
 import shutil
 
 
-import data
+import data_bis
 import model
 import utils
 import transforms
@@ -98,7 +98,7 @@ def collect_lambda_stats(model) -> dict:
     base = model.module if hasattr(model, 'module') else model
 
     for name, mod in base.named_modules():
-        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM"]:
+        if mod.__class__.__name__ not in ["SSM", "Progressive_SSM", "Progressive_SSM_FT"]:
             continue
 
         with torch.no_grad():
@@ -427,6 +427,14 @@ def main():
                         help="Number of frequencies in the trainable spectrogram. "
                              "Standard choice is to set it equal to the number of states.")
 
+    parser.add_argument("--progressive", action="store_true", default=False,
+                        help="If set, will proceed the SSM in chunks + gradient checkpointing, thus reducing VRAM consumption")
+
+    parser.add_argument("--fft_kernel", action="store_true", default=False,
+                        help="If set, will proceed the SSM with the related kernel, thus accelerating the training.")
+
+
+
     parser.add_argument("--chunk-dur", type=float, default=6.0,
                         help="chunk duration in seconds. The input sequence will be split "
                              "into chunks for computation by the SSM module.")
@@ -562,12 +570,12 @@ def main():
     # ---------------------------------------------------------------------------
     if is_distributed:
         if global_rank == 0:
-            train_dataset, valid_dataset, args = data.load_datasets(parser, args)
+            train_dataset, valid_dataset, args = data_bis.load_datasets(parser, args)
         dist.barrier()
         if global_rank != 0:
-            train_dataset, valid_dataset, args = data.load_datasets(parser, args)
+            train_dataset, valid_dataset, args = data_bis.load_datasets(parser, args)
     else:
-        train_dataset, valid_dataset, args = data.load_datasets(parser, args)
+        train_dataset, valid_dataset, args = data_bis.load_datasets(parser, args)
     args.sample_rate = train_dataset.sample_rate
 
     # Création du répertoire de sortie (rank 0 uniquement)
@@ -662,6 +670,8 @@ def main():
             B_C_init="orthogonal" if args.og else "ones",
             encoder=encoder,
             device=device,
+            progressive=args.progressive,
+            fft_kernel = args.fft_kernel,
             chunk_duration=chunk_duration_in_frames,
             log_distributed_frequencies=args.mel,
             eps_stability=args.eps_stability,
@@ -675,8 +685,14 @@ def main():
             structured_initialisation= args.structured_initialisation
         ).to(device)
 
-        print("Proceeding by chunks: ", trainable_spectrogram.magssm_encoder.mimo.progressive)
-
+        if args.progressive:
+            method = "progressive"
+        elif args.fft_kernel:
+            method = "fft_kernel"
+        else:
+            method = "vmap"
+        
+        print("Computation method", method)
 
         total_params = sum(p.numel() for p in trainable_spectrogram.parameters() if p.requires_grad)
         print_rank0(f"Total number of parameters: {total_params}")

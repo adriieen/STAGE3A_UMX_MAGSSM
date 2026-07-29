@@ -46,7 +46,11 @@ def save_checkpoint(state: dict, is_best: bool, path: str, target: str):
     torch.save(state, os.path.join(path, target + ".chkpnt"))
     if is_best:
         # save just the weights
-        torch.save(state["state_dict"], os.path.join(path, target + ".pth"))
+        state_dict = state.get("state_dict", state.get("state_dict_model"))
+        if state_dict is not None:
+            torch.save(state_dict, os.path.join(path, target + ".pth"))
+        if "state_dict_decoder" in state:
+            torch.save(state["state_dict_decoder"], os.path.join(path, target + "_decoder.pth"))
 
 
 class AverageMeter(object):
