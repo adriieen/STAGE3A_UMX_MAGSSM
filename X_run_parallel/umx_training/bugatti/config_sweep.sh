@@ -23,17 +23,17 @@ TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-u
 
 # --- Arguments du modèle / dataset ---
 ROOT="/Data/adrien.dubois/musdb18_ds3"
-OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/post_soutenance/umx_training/[28-07]seed=42"
+OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/post_soutenance/umx_training/[high_nfft_og_hidden_size_ratio]seed=42"
 TARGET="vocals"
 EPOCHS=400
 BATCH_SIZE=16
 NB_WORKERS=24
 SEQ_DUR=4
-N_FFT=680
-N_HOP=68
+N_FFT=1360
+N_HOP=136
 HIDDEN_SIZE=170
 SEED=42
-LR=0.002
+LR=0.004
 
 # --- Flags booléens (mettre à 1 pour activer, 0 pour désactiver) ---
 FLAG_IS_WAV=1

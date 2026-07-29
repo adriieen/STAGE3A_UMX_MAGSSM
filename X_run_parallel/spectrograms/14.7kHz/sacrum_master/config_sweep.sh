@@ -23,17 +23,17 @@ TRAIN_SCRIPT="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/open-u
 
 # --- Arguments du modèle / dataset ---
 ROOT="/Data/adrien.dubois/musdb18_ds3"
-OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/[small_lr]342bins_alpha0_structured_init"
+OUTPUT_BASE="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/681bins_order=1.5"
 TARGET="vocals"
 EPOCHS=400
 EPOCHS_RESUME=40  
-BATCH_SIZE=8
+BATCH_SIZE=4
 NB_WORKERS=5
 SEQ_DUR=4
 CHUNK_DUR=1
-NB_MAGSSM_STATES=682
-N_FFT=680
-N_HOP=68
+NB_MAGSSM_STATES=1021
+N_FFT=1360
+N_HOP=136
 LEARNING_RATE=0.001
 
 # --- Régularisation L2 sur les parties imaginaires des valeurs propres ---

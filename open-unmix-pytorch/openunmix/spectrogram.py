@@ -119,8 +119,8 @@ class Trainable_spectrogram(nn.Module):
         else:
              _ , _, _, T = X.data.shape
 
-        # Audio enters the pipeline with format (B, 2, L)
-        # print("Spectrogram Module input shape : expects (B,2,L)", x.shape)
+        # Audio enters the pipeline with format (B, 2, N0)
+        # print("Spectrogram Module input shape : expects (B,2,N0)", x.shape)
 
 
         x_left, x_right = x[:,0,:], x[:,1,:]

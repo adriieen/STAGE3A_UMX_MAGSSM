@@ -25,7 +25,7 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
         REGUL_ARGS="--regularize_window --epsilon1 ${EPS1} --lambda_coeff_1 ${LC1} --lambda_coeff_2 ${LC2}"
     fi
 
-    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/[small_lr]342bins_alpha0_structured_init/${RUN_NAME}"
+    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/trainable_spectograms/14.7kHz/Tests_post_soutenance/complex_specto/681bins_order=1.5/${RUN_NAME}"
     echo ""
     echo "────────────────────────────────────────────────────"
     echo "  [$((i+1))/${#WINDOW_CONFIGS[@]}] Lancement : ${RUN_NAME}"
@@ -61,13 +61,13 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
     --output "${OUTPUT_DIR}" \
     --target "vocals" \
     --epochs ${RUN_EPOCHS} \
-    --batch-size 8 \
+    --batch-size 4 \
     --nb-workers 5 \
     --seq-dur 4 \
     --chunk-dur 1 \
-    --nb_magssm_states 682 \
-    --nfft 680 \
-    --nhop 68 \
+    --nb_magssm_states 1021 \
+    --nfft 1360 \
+    --nhop 136 \
     --alpha 0 \
     --beta 0 \
     --eps-stability 0 \

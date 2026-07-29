@@ -33,7 +33,7 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
         REGUL_ARGS="--regularize_window --epsilon1 ${EPS1} --lambda_coeff_1 ${LC1} --lambda_coeff_2 ${LC2}"
     fi
 
-    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/post_soutenance/umx_training/[28-07]seed=42/${RUN_NAME}"
+    OUTPUT_DIR="/users/eleves-a/2023/adrien.dubois/stage/STAGE3A_UMX_MAGSSM/outputs/post_soutenance/umx_training/[high_nfft_og_hidden_size_ratio]seed=42/${RUN_NAME}"
     echo ""
     echo "────────────────────────────────────────────────────"
     echo "  [$((i+1))/${#WINDOW_CONFIGS[@]}] Lancement : ${RUN_NAME}"
@@ -56,11 +56,11 @@ for i in "${!WINDOW_CONFIGS[@]}"; do
     --batch-size 16 \
     --nb-workers 24 \
     --seq-dur 4 \
-    --nfft 680 \
-    --nhop 68 \
+    --nfft 1360 \
+    --nhop 136 \
     --hidden-size 170 \
     --seed 42 \
-    --lr 0.002 \
+    --lr 0.004 \
     --is-wav \
     ${REGUL_ARGS}
 
